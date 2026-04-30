@@ -28,3 +28,12 @@ streamlit run main.py
 ```
 
 This will start the Streamlit development server and open the app in your browser.
+
+### Adding new packages
+
+```bash
+uv add python-dotenv
+```
+
+### ENVs to add
+OPENROUTER_API_KEY

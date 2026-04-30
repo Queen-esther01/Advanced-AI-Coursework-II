@@ -1,4 +1,24 @@
+import os
+from dotenv import load_dotenv
 import streamlit as st
+from openrouter import OpenRouter
+
+load_dotenv(verbose=True)
+
+print(os.getenv("OPENROUTER_API_KEY"))
+print("hello")
+
+
+
+with OpenRouter(api_key=os.getenv("OPENROUTER_API_KEY")) as client:
+    response = client.chat.send(
+        model="google/gemma-4-31b-it",
+        messages=[
+            {"role": "user", "content": "Explain quantum computing in one sentence."}
+        ],
+    )
+    print(response.choices[0].message.content)
+
 
 st.set_page_config(page_title="AAI Chat", page_icon="💬", layout="centered")
 
