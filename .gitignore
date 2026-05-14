@@ -2,3 +2,11 @@
 __pycache__
 .env
 train_historical_data/
+task_2/train_historical_data/
+task_2/models/
+resources/
+.vscode/
+.DS_Store
+.store/
+data/
+resources/
