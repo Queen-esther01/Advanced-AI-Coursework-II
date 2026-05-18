@@ -24,6 +24,8 @@ uv sync
 ### Running the App
 
 ```bash
+python -m streamlit run main.py
+or
 streamlit run main.py
 ```
 
