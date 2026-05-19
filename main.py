@@ -5,6 +5,19 @@ import streamlit as st
 from openrouter import OpenRouter
 from openrouter.types import UNSET
 
+
+# Task1 Imports
+# ---------------------------------------------
+from ticket_finder import (
+    get_station_details, parse_travel_date, search_national_rail_tickets,
+    validate_station, reset_ticket_state, TicketState
+)
+#----------------------------------------------
+
+st.sidebar.title("Mode")
+mode = st.sidebar.radio("What do you want help with?", ("Delay Assistance (Task 2)", "Cheapest Ticket (Task 1)"))
+
+
 load_dotenv(verbose=True)
 
 MODEL_NAME = "google/gemma-4-31b-it"
@@ -88,28 +101,47 @@ if "messages" not in st.session_state:
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+        
+        
+if "ticket_state" not in st.session_state:
+    st.session_state.ticket_state = TicketState()
+    
+    
+def process_ticket_input(user_input, ticket_state):
+    from ticket_finder import ticket_response_streamlit
+    reply = ticket_response_streamlit(user_input, ticket_state)
+    if reply is None:
+        reply = "I didn't understand that. Please try again."
+    return reply
+
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
-    # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Ask the LLM using the full conversation so far (streamed into the chat).
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            stream = stream_llm_reply(st.session_state.messages)
-            try:
-                first_chunk = next(stream)
-            except StopIteration:
-                first_chunk = None
+    # Generate bot's reply based on mode
+    if mode == "Cheapest Ticket (Task 1)":
+        with st.chat_message("assistant"):
+            reply = process_ticket_input(prompt, st.session_state.ticket_state)
+            st.markdown(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+    else:
+        # Delay mode – use LLM as before
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                stream = stream_llm_reply(st.session_state.messages)
+                try:
+                    first_chunk = next(stream)
+                except StopIteration:
+                    first_chunk = None
 
-        def stream_from_first():
-            if first_chunk is not None:
-                yield first_chunk
-            yield from stream
+            def stream_from_first():
+                if first_chunk is not None:
+                    yield first_chunk
+                yield from stream
 
-        reply = st.write_stream(stream_from_first()) or ""
+            reply = st.write_stream(stream_from_first()) or ""
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.session_state.messages.append({"role": "assistant", "content": reply})

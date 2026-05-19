@@ -1,0 +1,22 @@
+time | What time is it?
+time | Could you please tell me the time?
+time | May I know the time?
+time | Would you mind if I ask you the Time?
+time | What time does the train leave?
+time | What time does the train arrive?
+time | The meeting starts at 3:45 PM.
+time | Let’s talk at 09:00.
+time | The alarm should ring at 6 in the morning.
+time | The session begins at half past two.
+time | The call is at quarter to eight.
+date | What is today's date?
+date | What is the date today?
+date | What day is it today?
+date | Please may you tell me the date.
+date | Please may you give me the date.
+date | What day will it arrive?
+date | The meeting is scheduled for 12 March 2025.
+date | Our next appointment is on 05/11/2026.
+date | The event will take place on the 30th of April.
+date | I’m travelling on 2026-06-14.
+date | The deadline is next Monday.
