@@ -135,6 +135,13 @@ def is_ticket_intent(user_input):
     keywords = ['ticket', 'cheapest', 'cheap', 'fare', 'book', 'buy', 'train', 'journey', 'travel']
     return any(kw in user_input.lower() for kw in keywords)
 
+def process_ticket_input(user_input, ticket_state):
+    from ticket_finder import ticket_response_streamlit
+    reply = ticket_response_streamlit(user_input, ticket_state)
+    if reply is None:
+        reply = "I didn't understand that. Please try again."
+    return reply
+
 def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_return=False, inward_datetime=None):
     """
     outward_datetime and inward_datetime must be in the format "YYYY-MM-DDTHH:MM:SS+01:00".
