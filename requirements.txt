@@ -20,7 +20,7 @@ cymem==2.0.13
 debugpy==1.8.20
 decorator==5.2.1
 dotenv==0.9.9
-en_core_web_sm @ file:///C:/Users/dayot/Desktop/chatbot/en_core_web_sm-3.8.0-py3-none-any.whl#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 executing==2.2.1
 gitdb==4.0.12
 GitPython==3.1.50

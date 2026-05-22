@@ -1,32 +1,16 @@
-import json
-import os
 import random
 from dotenv import load_dotenv
 import streamlit as st
-from openrouter import OpenRouter
-from openrouter.types import UNSET
+from llm_client import LLMClient
 
 # Task1 Imports
 from ticket_finder import (
     is_ticket_intent,
     process_ticket_input,
     TicketState,
-    reset_ticket_state,
-)
-
-# Task2 Imports
-from task_2.delay_tool import tools
-from task_2.utils import (
-    MAX_TOOL_ROUNDS,
-    clean_model_text,
-    execute_tool_call,
-    merge_stream_tool_calls,
-    tool_calls_from_accumulator,
 )
 
 load_dotenv(verbose=True)
-
-MODEL_NAME = "google/gemma-4-31b-it"
 
 SYSTEM_PROMPT = """
 You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
@@ -68,73 +52,7 @@ INITIAL_GREETINGS = [
     "Hello! Stuck at a station or running late? I can help you with that.",
 ]
 
-
-def stream_llm_reply(messages):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        yield "OPENROUTER_API_KEY is not set, so I cannot call the LLM yet."
-        return
-
-    model_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
-
-    try:
-        with OpenRouter(api_key=api_key) as client:
-            for _ in range(MAX_TOOL_ROUNDS):
-                content_parts = []
-                tool_call_accumulator = {}
-
-                response = client.chat.send(
-                    model=MODEL_NAME,
-                    messages=model_messages,
-                    stream=True,
-                    tools=tools,
-                )
-                with response as event_stream:
-                    for chunk in event_stream:
-                        if not chunk.choices:
-                            continue
-
-                        delta = chunk.choices[0].delta
-                        if delta.content and delta.content is not UNSET:
-                            cleaned = clean_model_text(delta.content)
-                            if cleaned:
-                                content_parts.append(cleaned)
-                                yield cleaned
-
-                        if delta.tool_calls:
-                            merge_stream_tool_calls(
-                                tool_call_accumulator, delta.tool_calls
-                            )
-
-                tool_calls = tool_calls_from_accumulator(tool_call_accumulator)
-                if not tool_calls:
-                    return
-
-                assistant_message = {
-                    "role": "assistant",
-                    "content": "".join(content_parts) or None,
-                    "tool_calls": tool_calls,
-                }
-                model_messages.append(assistant_message)
-
-                for tool_call in tool_calls:
-                    tool_result = execute_tool_call(
-                        tool_call["function"]["name"],
-                        tool_call["function"]["arguments"],
-                    )
-                    model_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call["id"],
-                            "content": json.dumps(tool_result),
-                        }
-                    )
-
-            yield (
-                "Sorry, I could not finish the tool request after several attempts."
-            )
-    except Exception as exc:
-        yield f"I could not get a model response: {exc}"
+llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
 
 
 st.set_page_config(page_title="AI Train Assistant", layout="centered")
@@ -189,7 +107,7 @@ if prompt := st.chat_input("Type a message..."):
         # Use LLM (streaming) for delay assistance
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                stream = stream_llm_reply(st.session_state.messages)
+                stream = llm_client.stream_reply(st.session_state.messages)
                 try:
                     first_chunk = next(stream)
                 except StopIteration:
