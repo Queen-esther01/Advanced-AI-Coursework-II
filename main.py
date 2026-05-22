@@ -1,21 +1,20 @@
 import os
 import random
-from dotenv import load_dotenv
+
 import streamlit as st
-from openrouter import OpenRouter
-from openrouter.types import UNSET
+from dotenv import load_dotenv
+
+from llm_client import LLMClient
 
 # Task1 Imports
 from ticket_finder import (
+    TicketState,
     is_ticket_intent,
     process_ticket_input,
-    TicketState,
     reset_ticket_state,
 )
 
 load_dotenv(verbose=True)
-
-MODEL_NAME = "google/gemma-4-31b-it"
 
 SYSTEM_PROMPT = """
 You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
@@ -54,31 +53,7 @@ INITIAL_GREETINGS = [
     "Hi — whether you are at Weymouth, Waterloo, or somewhere in between, I can help with delay information.",
 ]
 
-
-def stream_llm_reply(messages):
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        yield "OPENROUTER_API_KEY is not set, so I cannot call the LLM yet."
-        return
-
-    model_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
-
-    try:
-        with OpenRouter(api_key=api_key) as client:
-            response = client.chat.send(
-                model=MODEL_NAME,
-                messages=model_messages,
-                stream=True,
-            )
-            with response as event_stream:
-                for chunk in event_stream:
-                    if not chunk.choices:
-                        continue
-                    content = chunk.choices[0].delta.content
-                    if content and content is not UNSET:
-                        yield content
-    except Exception as exc:
-        yield f"I could not get a model response: {exc}"
+llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
 
 
 st.set_page_config(page_title="AI Train Assistant", layout="centered")
@@ -107,17 +82,18 @@ def process_user_input(user_input, ticket_state):
     """
     lower_input = user_input.lower()
     # Special commands that must go to ticket handler (even if state idle)
-    if lower_input in ['reset', 'yes', 'bye']:
+    if lower_input in ["reset", "yes", "bye"]:
         reply = process_ticket_input(user_input, ticket_state)
         return reply, False
     # If we are already in an active ticket conversation (stage not idle), use ticket handler.
     # Or if the user shows ticket intent (even if idle), use ticket handler.
-    if ticket_state.stage != 'idle' or is_ticket_intent(user_input):
+    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
         reply = process_ticket_input(user_input, ticket_state)
         return reply, False
     else:
         # No active ticket conversation and no ticket intent → use LLM delay assistant
         return None, True
+
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
@@ -133,7 +109,7 @@ if prompt := st.chat_input("Type a message..."):
         # Use LLM (streaming) for delay assistance
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                stream = stream_llm_reply(st.session_state.messages)
+                stream = llm_client.stream_reply(st.session_state.messages)
                 try:
                     first_chunk = next(stream)
                 except StopIteration:

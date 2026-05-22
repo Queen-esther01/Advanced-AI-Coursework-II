@@ -8,8 +8,12 @@ from zeep.transports import Transport
 
 load_dotenv()
 
-USERNAME = os.getenv("USERNAME")
-PASSWORD = os.getenv("PASSWORD")
+USERNAME = os.getenv("RAILWAY_USERNAME")
+PASSWORD = os.getenv("RAILWAY_PASSWORD")
+if not USERNAME:
+    USERNAME = os.getenv("USERNAME")
+if not PASSWORD:
+    PASSWORD = os.getenv("PASSWORD")
 
 
 WSDL = "https://ojp.nationalrail.co.uk/webservices/jpservices.wsdl"
@@ -27,5 +31,5 @@ def get_ojp_client():
     )
 
     transport = Transport(session=session)
-    client = Client(WSDL, transport=transport, settings=settings)
+    client = Client(WSDL, transport=transport)
     return client
