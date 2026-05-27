@@ -19,7 +19,6 @@ information is missing, including:
 - the train/service they are on
 - the current station or current location of the train
 - the passenger's destination station
-- the planned arrival/departure time at the current location, if known
 - the current delay in minutes
 - any relevant disruption information the passenger provides
 
