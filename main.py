@@ -5,6 +5,14 @@ import streamlit as st
 from openrouter import OpenRouter
 from openrouter.types import UNSET
 
+# Task1 Imports
+from ticket_finder import (
+    is_ticket_intent,
+    process_ticket_input,
+    TicketState,
+    reset_ticket_state,
+)
+
 load_dotenv(verbose=True)
 
 MODEL_NAME = "google/gemma-4-31b-it"
@@ -74,9 +82,8 @@ def stream_llm_reply(messages):
         yield f"I could not get a model response: {exc}"
 
 
-st.set_page_config(page_title="AI Train Ticket Bot", layout="centered")
-
-st.title("AI Train Ticket Bot")
+st.set_page_config(page_title="AI Train Assistant", layout="centered")
+st.title("AI Train Assistant")
 
 # Initialise chat history in session state
 if "messages" not in st.session_state:
@@ -84,10 +91,34 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": random.choice(INITIAL_GREETINGS)}
     ]
 
-# Display existing messages
+# Initialise ticket state (holds conversation progress)
+if "ticket_state" not in st.session_state:
+    st.session_state.ticket_state = TicketState()
+
+# Display all previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
+
+
+def process_user_input(user_input, ticket_state):
+    """
+    Decide whether to handle with ticket state machine or LLM.
+    Returns a reply string and a boolean indicating if LLM was used.
+    """
+    lower_input = user_input.lower()
+    # Special commands that must go to ticket handler (even if state idle)
+    if lower_input in ['reset', 'yes', 'bye']:
+        reply = process_ticket_input(user_input, ticket_state)
+        return reply, False
+    # If we are already in an active ticket conversation (stage not idle), use ticket handler.
+    # Or if the user shows ticket intent (even if idle), use ticket handler.
+    if ticket_state.stage != 'idle' or is_ticket_intent(user_input):
+        reply = process_ticket_input(user_input, ticket_state)
+        return reply, False
+    else:
+        # No active ticket conversation and no ticket intent → use LLM delay assistant
+        return None, True
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
@@ -96,20 +127,28 @@ if prompt := st.chat_input("Type a message..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Ask the LLM using the full conversation so far (streamed into the chat).
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            stream = stream_llm_reply(st.session_state.messages)
-            try:
-                first_chunk = next(stream)
-            except StopIteration:
-                first_chunk = None
+    # Decide how to respond
+    reply, use_llm = process_user_input(prompt, st.session_state.ticket_state)
 
-        def stream_from_first():
-            if first_chunk is not None:
-                yield first_chunk
-            yield from stream
+    if use_llm:
+        # Use LLM (streaming) for delay assistance
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                stream = stream_llm_reply(st.session_state.messages)
+                try:
+                    first_chunk = next(stream)
+                except StopIteration:
+                    first_chunk = None
 
-        reply = st.write_stream(stream_from_first()) or ""
+            def stream_from_first():
+                if first_chunk is not None:
+                    yield first_chunk
+                yield from stream
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
+            reply = st.write_stream(stream_from_first()) or ""
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+    else:
+        # Use ticket handler reply (non‑streaming)
+        with st.chat_message("assistant"):
+            st.markdown(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
