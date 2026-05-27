@@ -132,7 +132,7 @@ def reset_ticket_state():
     state = TicketState()
 
 def is_ticket_intent(user_input):
-    keywords = ['ticket', 'cheapest', 'cheap', 'fare', 'book', 'buy', 'train', 'journey', 'travel']
+    keywords = ['ticket', 'cheapest', 'cheap', 'fare', 'book', 'buy', 'journey', 'travel']
     return any(kw in user_input.lower() for kw in keywords)
 
 def process_ticket_input(user_input, ticket_state):

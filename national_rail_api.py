@@ -1,11 +1,14 @@
+import os
 from zeep import Client
 from requests import Session
 from requests.auth import HTTPBasicAuth
 from zeep.transports import Transport
+from dotenv import load_dotenv
 
+load_dotenv()
 
-USERNAME = "wwang"
-PASSWORD = "?i92S6"
+USERNAME = os.getenv("USERNAME")
+PASSWORD = os.getenv("PASSWORD")
 
 
 WSDL = "https://ojp.nationalrail.co.uk/webservices/jpservices.wsdl"
