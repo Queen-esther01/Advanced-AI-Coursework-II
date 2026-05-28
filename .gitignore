@@ -1,6 +1,13 @@
 .venv
 __pycache__
 .env
-train_historical_data/
-task_2/train_historical_data/
-task_2/models/
+task_2/train_historical_data/2022_WEY2WAT.xlsx
+task_2/train_historical_data/2022_WAT2WEY.xlsx
+task_2/train_historical_data/2023_WEY2WAT.xlsx
+task_2/train_historical_data/2023_WAT2WEY.xlsx
+task_2/train_historical_data/2024_WEY2WAT.xlsx
+task_2/train_historical_data/2024_WAT2WEY.xlsx
+task_2/train_historical_data/2025_WEY2WAT.xlsx
+task_2/train_historical_data/2025_WAT2WEY.xlsx
+task_2/train_historical_data/modelling_data.csv
+task_2/train_historical_data/wey2wat_modelling_data.csv
