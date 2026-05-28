@@ -1,14 +1,20 @@
 import random
-from dotenv import load_dotenv
+from dataclasses import dataclass, field
+from pathlib import Path
+
 import streamlit as st
+from dotenv import load_dotenv
+
+from incident_handler import (
+    IncidentState,
+    is_incident_intent,
+    process_incident_input,
+    reset_incident_state,
+)
 from llm_client import LLMClient
 
 # Task1 Imports
-from ticket_finder import (
-    is_ticket_intent,
-    process_ticket_input,
-    TicketState,
-)
+from ticket_finder import TicketState, is_ticket_intent, process_ticket_input
 
 load_dotenv(verbose=True)
 
@@ -43,16 +49,54 @@ Do not ask for unnecessary fields like day_of_week.
 """.strip()
 
 INITIAL_GREETINGS = [
-    "Hello! How can I help with your journey today?",
-    "Hi there — travelling between Weymouth and London Waterloo? Tell me what you need.",
-    "Good to see you. Are you on a train now, or planning a trip from Weymouth or Waterloo?",
-    "Welcome, let me know how I can help.",
-    "Hi there. I help passengers on the South Western route between Weymouth and Waterloo — how can I assist?",
-    "Good day. Tell me about your journey and what you need help with.",
-    "Hello! Stuck at a station or running late? I can help you with that.",
+    "Hello! I can help with **Weymouth–Waterloo delay information** or **SWR disruption/contingency plans** "
+    "(line blockages and station disruptions). What do you need?",
+    "Hi — ask about a **train delay** on the WEY–WAT line, or describe a **line blockage** / **station disruption** "
+    "for staff and passenger advice from the plans.",
+    "Welcome. For passengers: share your service and where you are. "
+    "For staff: say e.g. **station disruption at Weymouth** or a **blockage between two stations**.",
 ]
 
 llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
+
+DISRUPTION_LLM = LLMClient()
+
+
+@dataclass
+class HandlerResult:
+    text: str | None = None
+    use_llm: bool = False
+    images: list[str] = field(default_factory=list)
+
+
+def _processing_label(
+    user_input: str,
+    ticket_state: TicketState,
+    incident_state: IncidentState,
+) -> str:
+    if incident_state.stage != "idle" or is_incident_intent(user_input):
+        if incident_state.stage == "collecting" or is_incident_intent(user_input):
+            return "Looking up contingency plans..."
+        return "Generating contingency advice..."
+    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
+        return "Processing your journey details..."
+    return "Thinking..."
+
+
+def _paths_to_strings(paths: list[Path]) -> list[str]:
+    return [str(p) for p in paths if Path(p).is_file()]
+
+
+def render_assistant_content(content: str, images: list[str] | None = None) -> None:
+    st.markdown(content)
+    for raw in images or []:
+        path = Path(raw)
+        if path.is_file():
+            caption = path.name
+            section = path.parent.name.replace("-", " ").title()
+            if section and section != "Extracted Media":
+                caption = f"{section} — {path.name}"
+            st.image(str(path), caption=caption, use_container_width=True)
 
 
 st.set_page_config(page_title="AI Train Assistant", layout="centered")
@@ -68,60 +112,95 @@ if "messages" not in st.session_state:
 if "ticket_state" not in st.session_state:
     st.session_state.ticket_state = TicketState()
 
+if "incident_state" not in st.session_state:
+    st.session_state.incident_state = IncidentState()
+
 # Display all previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_assistant_content(
+                message["content"],
+                message.get("images"),
+            )
+        else:
+            st.markdown(message["content"])
 
 
-def process_user_input(user_input, ticket_state):
+def process_user_input(user_input, ticket_state, incident_state) -> HandlerResult:
     """
     Decide whether to handle with ticket state machine or LLM.
-    Returns a reply string and a boolean indicating if LLM was used.
     """
     lower_input = user_input.lower()
-    # Special commands that must go to ticket handler (even if state idle)
-    if lower_input in ['reset', 'yes', 'bye']:
+    if lower_input == "reset":
+        ticket_state.__dict__.update(TicketState().__dict__)
+        reset_incident_state(incident_state)
+        return HandlerResult(text="Conversation reset. How can I help you?")
+    if lower_input in ("yes", "bye"):
+        if ticket_state.stage != "idle":
+            reply = process_ticket_input(user_input, ticket_state)
+            return HandlerResult(text=reply)
+        if incident_state.stage != "idle":
+            reply, images = process_incident_input(
+                user_input,
+                incident_state,
+                llm_client=DISRUPTION_LLM,
+            )
+            return HandlerResult(text=reply, images=_paths_to_strings(images))
+    if incident_state.stage != "idle" or is_incident_intent(user_input):
+        reply, images = process_incident_input(
+            user_input,
+            incident_state,
+            llm_client=DISRUPTION_LLM,
+        )
+        return HandlerResult(text=reply, images=_paths_to_strings(images))
+    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
         reply = process_ticket_input(user_input, ticket_state)
-        return reply, False
-    # If we are already in an active ticket conversation (stage not idle), use ticket handler.
-    # Or if the user shows ticket intent (even if idle), use ticket handler.
-    if ticket_state.stage != 'idle' or is_ticket_intent(user_input):
-        reply = process_ticket_input(user_input, ticket_state)
-        return reply, False
-    else:
-        # No active ticket conversation and no ticket intent → use LLM delay assistant
-        return None, True
+        return HandlerResult(text=reply)
+    return HandlerResult(use_llm=True)
+
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
-    # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Decide how to respond
-    reply, use_llm = process_user_input(prompt, st.session_state.ticket_state)
+    ticket_state = st.session_state.ticket_state
+    incident_state = st.session_state.incident_state
+    label = _processing_label(prompt, ticket_state, incident_state)
 
-    if use_llm:
-        # Use LLM (streaming) for delay assistance
-        with st.chat_message("assistant"):
+    with st.chat_message("assistant"):
+        will_use_llm = (
+            ticket_state.stage == "idle"
+            and incident_state.stage == "idle"
+            and not is_incident_intent(prompt)
+            and not is_ticket_intent(prompt)
+            and prompt.lower() not in ("reset", "yes", "bye")
+        )
+
+        if will_use_llm:
             with st.spinner("Thinking..."):
+                result = process_user_input(prompt, ticket_state, incident_state)
                 stream = llm_client.stream_reply(st.session_state.messages)
                 try:
                     first_chunk = next(stream)
                 except StopIteration:
                     first_chunk = None
 
-            def stream_from_first():
-                if first_chunk is not None:
-                    yield first_chunk
-                yield from stream
+                def stream_from_first():
+                    if first_chunk is not None:
+                        yield first_chunk
+                    yield from stream
 
-            reply = st.write_stream(stream_from_first()) or ""
-        st.session_state.messages.append({"role": "assistant", "content": reply})
-    else:
-        # Use ticket handler reply (non‑streaming)
-        with st.chat_message("assistant"):
-            st.markdown(reply)
-        st.session_state.messages.append({"role": "assistant", "content": reply})
+                reply = st.write_stream(stream_from_first()) or ""
+            st.session_state.messages.append({"role": "assistant", "content": reply})
+        else:
+            with st.spinner(label):
+                result = process_user_input(prompt, ticket_state, incident_state)
+            reply = result.text or ""
+            render_assistant_content(reply, result.images)
+            msg: dict = {"role": "assistant", "content": reply}
+            if result.images:
+                msg["images"] = result.images
+            st.session_state.messages.append(msg)
