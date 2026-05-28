@@ -1,7 +1,6 @@
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,15 +30,6 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(tmp, path)
-
-
-@dataclass
-class FileResult:
-    path: Path
-    ok: bool
-    chunk_count: int = 0
-    error: str | None = None
-
 
 class IndexingCheckpoint:
     def __init__(self, checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH):
