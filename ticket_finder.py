@@ -145,10 +145,11 @@ def process_ticket_input(user_input, ticket_state):
 def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_return=False, inward_datetime=None):
     """
     outward_datetime and inward_datetime must be in the format "YYYY-MM-DDTHH:MM:SS+01:00".
+    Returns: (cheapest_price_in_pence, price_display_string, booking_link, notice_text)
     """
     if not outward_datetime:
         print("BOT: No valid outbound date provided.")
-        return None, None, None
+        return None, None, None, None
 
     print(f"DEBUG: origin CRS = {origin_crs}, dest CRS = {dest_crs}")
     print(f"DEBUG: outward_datetime = {outward_datetime}")
@@ -157,7 +158,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
 
     if not origin_crs or not dest_crs:
         print("BOT: Sorry, I could not recognise the station names.")
-        return None, None, None
+        return None, None, None, None
 
     # Build the request dictionary
     request = {
@@ -180,18 +181,38 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
         response = client.service.RealtimeJourneyPlan(**request)
     except Exception as e:
         print(f"BOT: Something went wrong while contacting National Rail: {e}")
-        return None, None, None
+        return None, None, None, None
 
-    # Parse response (same as before)
     if response.response != "Ok":
         print(f"BOT: National Rail returned an error: {response.responseDetails}")
-        return None, None, None
+        return None, None, None, None
 
     outward_journeys = response.outwardJourney
     if not outward_journeys:
         print("BOT: No journeys found for your dates. Please try a different time.")
-        return None, None, None
+        return None, None, None, None
 
+    # --- Collect service bulletins (notices) ---
+    notices = []
+    for journey in outward_journeys:
+        if hasattr(journey, 'serviceBulletins') and journey.serviceBulletins:
+            for bulletin in journey.serviceBulletins:
+                title = getattr(bulletin, 'title', '')
+                description = getattr(bulletin, 'description', '')
+                if title and description:
+                    notices.append(f"{title}: {description}")
+                elif description:
+                    notices.append(description)
+                elif title:
+                    notices.append(title)
+    # Remove duplicates while preserving order
+    unique_notices = []
+    for n in notices:
+        if n not in unique_notices:
+            unique_notices.append(n)
+    notice_text = "\n".join(unique_notices) if unique_notices else None
+
+    # --- Find cheapest fare ---
     cheapest_price = None
     cheapest_desc = None
     for journey in outward_journeys:
@@ -206,7 +227,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
 
     if cheapest_price is None:
         print("BOT: No fare information was returned. The service may be temporarily unavailable.")
-        return None, None, None
+        return None, None, None, notice_text
 
     price_pounds = cheapest_price / 100.0
         
@@ -217,7 +238,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
         is_return,
         inward_datetime
     )
-    return cheapest_price, f"£{price_pounds:.2f} ({cheapest_desc})", booking_link
+    return cheapest_price, f"£{price_pounds:.2f} ({cheapest_desc})", booking_link, notice_text
 
 def search_and_present_tickets():
     print(f"\nBOT: Looking for the cheapest ticket from {state.origin_name} to {state.dest_name}...")
@@ -418,19 +439,13 @@ def ticket_response(user_input):
 
 
 def search_and_present_tickets_streamlit(state):
-    # Safety checks
-    if not state.outbound_date_api:
-        return "I don't have a valid outbound date. Please start over by typing 'reset'."
-    if not state.origin_crs or not state.dest_crs:
-        return "I'm missing station details. Please reset the conversation by typing 'reset'."
-
     msg = f"\nLooking for the cheapest ticket from {state.origin_name} to {state.dest_name}...\n"
     if state.is_return:
         msg += f"     Outbound: {state.outbound_date_raw}, Return: {state.return_date_raw}\n"
     else:
         msg += f"     Outbound: {state.outbound_date_raw}\n"
 
-    price_pence, price_display, link = search_national_rail_tickets(
+    price_pence, price_display, link, notice = search_national_rail_tickets(
         state.origin_crs,
         state.dest_crs,
         state.outbound_date_api,
@@ -440,8 +455,9 @@ def search_and_present_tickets_streamlit(state):
 
     if price_pence is None:
         msg += "Please try again with different stations or dates.\n"
-        reset_ticket_state()   # use your global reset (but it uses global state, so we reset manually)
-        # Manual reset:
+        if notice:
+            msg += f"\n📢 **Notice from National Rail:**\n{notice}\n"
+        # Reset state
         state.origin_name = None
         state.origin_crs = None
         state.dest_name = None
@@ -457,6 +473,8 @@ def search_and_present_tickets_streamlit(state):
 
     msg += f"The cheapest ticket I found is {price_display}.\n"
     msg += f"You can book it at: {link}\n"
+    if notice:
+        msg += f"\n📢 **Notice from National Rail:**\n{notice}\n"
     msg += "Would you like to book another ticket? (type 'reset' to start over, or 'bye' to exit)"
     # Reset state for next conversation
     state.origin_name = None
