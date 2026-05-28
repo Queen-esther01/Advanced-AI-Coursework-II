@@ -42,6 +42,119 @@ _THOUGHT_TOKEN_PATTERNS = (
 MAX_TOOL_ROUNDS = 5
 DEFAULT_MINUTES_PER_STOP = 6.8
 
+DELAY_ASSISTANT_SYSTEM_PROMPT = """
+You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
+London Waterloo (WAT) and vice versa.
+
+Your job is to guide the passenger through a short chat and collect the details
+needed by a predictive delay model. Ask clear follow-up questions when
+information is missing, including:
+- the current station/location of the train
+- the passenger's destination station
+- the current delay in minutes
+- the planned departure or arrival time at the current stop — use 24-hour
+  time or am/pm (e.g. 17:55 or 5:55pm; bare '5:55' is treated as evening)
+
+Do not ask for stops remaining, remaining journey time, or expected arrival
+time at the destination. Those are calculated automatically by the tools.
+
+Keep replies concise and conversational. Ask only one question at a time.
+Never repeat the same question twice in one message, and do not re-ask for
+details the passenger already gave in this chat.
+
+Call check_station_coverage only once when the passenger first states where
+they are and where they are going, or if they change stations. Do not call it
+again for follow-up questions (e.g. "how long until I arrive?") if stations are
+already known.
+
+When coverage is confirmed and you have current delay and planned time at the
+current stop, call get_train_delay with train_journey, current_location,
+destination, current_delay, and planned_time_at_current_stop. Do not call
+get_train_delay until you have both delay and planned time.
+
+Use get_covered_stations only if the passenger asks which stations are supported.
+
+After tools return, you must always send a clear text reply to the passenger.
+Never end with only tool calls and no message.
+
+After a tool returns a prediction, explain the expected delay clearly to the
+passenger using the predicted_delay_minutes and reason fields. Do not invent
+numbers that were not returned by a tool.
+
+Do not ask for unnecessary fields like day_of_week.
+""".strip()
+
+
+def has_delay_inputs(journey_context):
+    """True when journey context has the fields required for get_train_delay."""
+    if journey_context.get("current_delay") is None:
+        return False
+    return bool(journey_context.get("planned_time_at_current_stop"))
+
+
+def build_system_prompt(journey_context):
+    """Build system prompt, including remembered journey details when set."""
+    prompt = DELAY_ASSISTANT_SYSTEM_PROMPT
+    if not journey_context.get("coverage_confirmed"):
+        return prompt
+
+    lines = [
+        "",
+        "Confirmed journey for this chat (do not call check_station_coverage again",
+        "unless the passenger changes stations):",
+        f"- train_journey: {journey_context.get('train_journey', '?')}",
+        f"- current_location: {journey_context.get('current_location', '?')} "
+        f"({journey_context.get('current_station_code', '?')})",
+        f"- destination: {journey_context.get('destination', '?')} "
+        f"({journey_context.get('destination_station_code', '?')})",
+    ]
+    if journey_context.get("current_delay") is not None:
+        lines.append(
+            f"- current_delay (minutes): {journey_context['current_delay']}"
+        )
+    if journey_context.get("planned_time_at_current_stop"):
+        lines.append(
+            "- planned_time_at_current_stop: "
+            f"{journey_context['planned_time_at_current_stop']}"
+        )
+    lines.append(
+        "For arrival or delay questions, call get_train_delay directly using "
+        "these details (update delay or time if the passenger gives new values)."
+    )
+    return prompt + "\n".join(lines)
+
+
+def update_journey_context_from_tool(journey_context, tool_name, arguments_json, result):
+    """Remember journey details from tool results for later turns in this chat."""
+    try:
+        arguments = json.loads(arguments_json or "{}")
+    except json.JSONDecodeError:
+        arguments = {}
+
+    if tool_name == "check_station_coverage" and result.get("covered"):
+        journey_context["coverage_confirmed"] = True
+        journey_context["train_journey"] = result.get("journey")
+        journey_context["current_location"] = arguments.get("current_location", "")
+        journey_context["destination"] = arguments.get("destination", "")
+        journey_context["current_station_code"] = result.get("current_station_code")
+        journey_context["destination_station_code"] = result.get(
+            "destination_station_code"
+        )
+
+    if tool_name == "get_train_delay" and "error" not in result:
+        journey_context["coverage_confirmed"] = True
+        journey_context["train_journey"] = result.get("train_journey")
+        journey_context["current_location"] = result.get("current_location")
+        journey_context["destination"] = result.get("destination")
+        journey_context["current_station_code"] = result.get("current_station_code")
+        journey_context["destination_station_code"] = result.get(
+            "destination_station_code"
+        )
+        journey_context["current_delay"] = arguments.get("current_delay")
+        journey_context["planned_time_at_current_stop"] = arguments.get(
+            "planned_time_at_current_stop"
+        )
+
 
 def get_stops_from_journey(journey):
     """

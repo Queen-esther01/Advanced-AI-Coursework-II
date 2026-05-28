@@ -151,16 +151,6 @@ def get_train_delay(
             )
         }
 
-    print(
-        f"Getting delay for train journey: {journey_key}, "
-        f"current location: {current_location} ({current_code}), "
-        f"destination: {destination} ({destination_code}), "
-        f"current delay: {current_delay}, "
-        f"planned time at current stop: {planned_time_at_current_stop}, "
-        f"stops remaining: {stops_remaining} ({metrics_source}), "
-        f"remaining minutes: {remaining_minutes} ({metrics_source})"
-    )
-
     try:
         artifact = _load_model_artifact(journey_key)
         features = _build_feature_row(
@@ -205,15 +195,14 @@ def get_train_delay(
     }
 
 
-tools = [
-    {
+GET_TRAIN_DELAY_TOOL = {
         "type": "function",
         "function": {
             "name": "get_train_delay",
             "description": (
                 "Predict the expected final delay at the passenger's destination "
-                "for a WEY↔WAT service. Call only after check_station_coverage "
-                "confirms the journey is supported."
+                "for a WEY↔WAT service. Use when you have current location, "
+                "destination, current delay, and planned time at the current stop."
             ),
             "parameters": {
                 "type": "object",
@@ -254,15 +243,17 @@ tools = [
                 ],
             },
         },
-    },
-    {
+    }
+
+CHECK_STATION_COVERAGE_TOOL = {
         "type": "function",
         "function": {
             "name": "check_station_coverage",
             "description": (
                 "Check whether the current location and destination are on the "
-                "supported Weymouth ↔ Waterloo route before requesting a delay "
-                "prediction."
+                "supported Weymouth ↔ Waterloo route. Call only once when the "
+                "passenger first gives stations, or when they change stations — "
+                "not on every follow-up question."
             ),
             "parameters": {
                 "type": "object",
@@ -279,8 +270,9 @@ tools = [
                 "required": ["current_location", "destination"],
             },
         },
-    },
-    {
+    }
+
+GET_COVERED_STATIONS_TOOL = {
         "type": "function",
         "function": {
             "name": "get_covered_stations",
@@ -299,5 +291,20 @@ tools = [
                 "required": ["journey"],
             },
         },
-    },
+    }
+
+tools = [
+    GET_TRAIN_DELAY_TOOL,
+    CHECK_STATION_COVERAGE_TOOL,
+    GET_COVERED_STATIONS_TOOL,
 ]
+
+
+def get_tools_for_session(coverage_confirmed):
+    """
+    Returns the tool list exposed to the LLM. Omits check_station_coverage once
+    the journey is already confirmed for this chat session.
+    """
+    if coverage_confirmed:
+        return [GET_TRAIN_DELAY_TOOL, GET_COVERED_STATIONS_TOOL]
+    return tools

@@ -15,48 +15,21 @@ from ticket_finder import (
 )
 
 # Task2 Imports
-from task_2.delay_tool import tools
+from task_2.delay_tool import get_tools_for_session
 from task_2.utils import (
     MAX_TOOL_ROUNDS,
+    build_system_prompt,
     clean_model_text,
     execute_tool_call,
+    has_delay_inputs,
     merge_stream_tool_calls,
     tool_calls_from_accumulator,
+    update_journey_context_from_tool,
 )
 
 load_dotenv(verbose=True)
 
-MODEL_NAME = "google/gemma-4-31b-it"
-
-SYSTEM_PROMPT = """
-You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
-London Waterloo (WAT) and vice versa.
-
-Your job is to guide the passenger through a short chat and collect the details
-needed by a predictive delay model. Ask clear follow-up questions when
-information is missing, including:
-- the current station/location of the train
-- the passenger's destination station
-- the current delay in minutes
-- the planned departure or arrival time at the current stop — use 24-hour
-  time or am/pm (e.g. 17:55 or 5:55pm; bare '5:55' is treated as evening)
-
-Do not ask for stops remaining, remaining journey time, or expected arrival
-time at the destination. Those are calculated automatically by the tools.
-
-Keep replies concise and conversational. Ask only one or two questions at a
-time. When you know the current location and destination, call
-check_station_coverage before attempting a prediction. If coverage is confirmed,
-call get_train_delay with train_journey, current_location, destination,
-current_delay, and planned_time_at_current_stop.
-Use get_covered_stations if the passenger asks which stations are supported.
-
-After a tool returns a prediction, explain the expected delay clearly to the
-passenger using the predicted_delay_minutes and reason fields. Do not invent
-numbers that were not returned by a tool.
-
-Do not ask for unnecessary fields like day_of_week.
-""".strip()
+MODEL_NAME = "openai/gpt-4o-mini"
 
 INITIAL_GREETINGS = [
     "Hello! How can I help with your journey today?",
@@ -69,17 +42,26 @@ INITIAL_GREETINGS = [
 ]
 
 
-def stream_llm_reply(messages):
+def stream_llm_reply(messages, journey_context=None):
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         yield "OPENROUTER_API_KEY is not set, so I cannot call the LLM yet."
         return
 
-    model_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+    journey_context = journey_context if journey_context is not None else {}
+    active_tools = get_tools_for_session(journey_context.get("coverage_confirmed"))
+
+    model_messages = [
+        {"role": "system", "content": build_system_prompt(journey_context)},
+        *messages,
+    ]
 
     try:
         with OpenRouter(api_key=api_key) as client:
-            for _ in range(MAX_TOOL_ROUNDS):
+            tools_called = set()
+            any_text_yielded = False
+
+            for round_index in range(MAX_TOOL_ROUNDS):
                 content_parts = []
                 tool_call_accumulator = {}
 
@@ -87,7 +69,7 @@ def stream_llm_reply(messages):
                     model=MODEL_NAME,
                     messages=model_messages,
                     stream=True,
-                    tools=tools,
+                    tools=active_tools,
                 )
                 with response as event_stream:
                     for chunk in event_stream:
@@ -99,7 +81,6 @@ def stream_llm_reply(messages):
                             cleaned = clean_model_text(delta.content)
                             if cleaned:
                                 content_parts.append(cleaned)
-                                yield cleaned
 
                         if delta.tool_calls:
                             merge_stream_tool_calls(
@@ -107,21 +88,74 @@ def stream_llm_reply(messages):
                             )
 
                 tool_calls = tool_calls_from_accumulator(tool_call_accumulator)
+                round_text = "".join(content_parts)
+
                 if not tool_calls:
+                    if round_text:
+                        any_text_yielded = True
+                        yield round_text
+
+                    if round_index + 1 < MAX_TOOL_ROUNDS:
+                        if (
+                            journey_context.get("coverage_confirmed")
+                            and has_delay_inputs(journey_context)
+                            and "get_train_delay" not in tools_called
+                        ):
+                            model_messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Use get_train_delay now with the journey "
+                                        "details you have, then explain the "
+                                        "predicted delay to me in plain language."
+                                    ),
+                                }
+                            )
+                            continue
+                        if "get_train_delay" in tools_called and not any_text_yielded:
+                            model_messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Explain the get_train_delay result to me in "
+                                        "plain language."
+                                    ),
+                                }
+                            )
+                            continue
+
+                    if not any_text_yielded:
+                        yield (
+                            "Sorry — I could not get a text reply from the assistant "
+                            "after running the tools. Please try again, or re-send "
+                            "your journey details (location, destination, delay, "
+                            "and planned time)."
+                        )
                     return
 
                 assistant_message = {
                     "role": "assistant",
-                    "content": "".join(content_parts) or None,
+                    "content": None,
                     "tool_calls": tool_calls,
                 }
                 model_messages.append(assistant_message)
 
                 for tool_call in tool_calls:
+                    tool_name = tool_call["function"]["name"]
+                    tools_called.add(tool_name)
                     tool_result = execute_tool_call(
-                        tool_call["function"]["name"],
+                        tool_name,
                         tool_call["function"]["arguments"],
                     )
+                    update_journey_context_from_tool(
+                        journey_context,
+                        tool_name,
+                        tool_call["function"]["arguments"],
+                        tool_result,
+                    )
+                    if journey_context.get("coverage_confirmed"):
+                        active_tools = get_tools_for_session(True)
+
                     model_messages.append(
                         {
                             "role": "tool",
@@ -150,6 +184,9 @@ if "messages" not in st.session_state:
 if "ticket_state" not in st.session_state:
     st.session_state.ticket_state = TicketState()
 
+if "journey_context" not in st.session_state:
+    st.session_state.journey_context = {}
+
 # Display all previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -177,6 +214,9 @@ def process_user_input(user_input, ticket_state):
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
+    if prompt.strip().lower() == "reset":
+        st.session_state.journey_context = {}
+
     # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -186,21 +226,20 @@ if prompt := st.chat_input("Type a message..."):
     reply, use_llm = process_user_input(prompt, st.session_state.ticket_state)
 
     if use_llm:
-        # Use LLM (streaming) for delay assistance
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                stream = stream_llm_reply(st.session_state.messages)
-                try:
-                    first_chunk = next(stream)
-                except StopIteration:
-                    first_chunk = None
-
-            def stream_from_first():
-                if first_chunk is not None:
-                    yield first_chunk
-                yield from stream
-
-            reply = st.write_stream(stream_from_first()) or ""
+                reply = st.write_stream(
+                    stream_llm_reply(
+                        st.session_state.messages,
+                        journey_context=st.session_state.journey_context,
+                    )
+                ) or ""
+            if not reply.strip():
+                reply = (
+                    "Sorry — no reply was shown. Please try again or re-send your "
+                    "journey details."
+                )
+                st.markdown(reply)
         st.session_state.messages.append({"role": "assistant", "content": reply})
     else:
         # Use ticket handler reply (non‑streaming)
