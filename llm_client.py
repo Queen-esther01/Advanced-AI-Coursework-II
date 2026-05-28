@@ -36,6 +36,41 @@ def _message_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def _format_llm_error(exc: BaseException) -> str:
+    msg = str(exc)
+    lower = msg.lower()
+    if "429" in msg or ("rate" in lower and "limit" in lower):
+        return (
+            "The AI service is temporarily **rate-limited** (too many requests). "
+            "Wait a minute and try again, or use a different model in `LLMClient`."
+        )
+    if "401" in msg or "403" in msg or "unauthorized" in lower or "forbidden" in lower:
+        return (
+            "The AI API key was **rejected**. Check `OPENROUTER_API_KEY` in your `.env` file."
+        )
+    if "402" in msg or "insufficient" in lower and "credit" in lower:
+        return (
+            "The AI account has **insufficient credits** on OpenRouter. "
+            "Top up the account or switch models."
+        )
+    api_message = re.search(r"'message':\s*'((?:\\'|[^'])*)'", msg)
+    if api_message:
+        detail = api_message.group(1).replace("\\'", "'")
+        if "429" in detail or "rate" in detail.lower():
+            return (
+                "The AI service is temporarily **rate-limited**. "
+                "Wait a minute and try again."
+            )
+        return f"The AI service returned an error: **{detail}**"
+    if "validation failed" in lower or "error finding id" in lower:
+        return (
+            "The AI service returned an unexpected response "
+            "(often **rate limiting** or a temporary outage). Wait and try again."
+        )
+    short = msg if len(msg) <= 280 else msg[:277] + "..."
+    return f"I could not get a model response: {short}"
+
+
 def _parse_json_response(text: str) -> dict[str, Any]:
     text = text.strip()
     if text.startswith("```"):
@@ -96,7 +131,33 @@ class LLMClient:
                         if content and content is not UNSET:
                             yield content
         except Exception as exc:
-            yield f"I could not get a model response: {exc}"
+            yield _format_llm_error(exc)
+
+    def complete_reply(
+        self,
+        messages: list[dict],
+        *,
+        system_prompt: str | None = None,
+        max_tokens: int = 2048,
+    ) -> str:
+        if not self.api_key:
+            return "OPENROUTER_API_KEY is not set, so I cannot call the LLM yet."
+
+        prompt = system_prompt if system_prompt is not None else self.system_prompt
+        model_messages = messages
+        if prompt:
+            model_messages = [{"role": "system", "content": prompt}, *messages]
+
+        try:
+            with OpenRouter(api_key=self.api_key) as client:
+                response = client.chat.send(
+                    model=self.model,
+                    messages=model_messages,
+                    max_tokens=max_tokens,
+                )
+            return _message_content_to_text(response.choices[0].message.content).strip()
+        except Exception as exc:
+            return _format_llm_error(exc)
 
     def describe_image(
         self,
