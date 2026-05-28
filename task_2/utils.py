@@ -30,6 +30,8 @@ _STATION_ALIASES = {
     "london waterloo": "WAT",
     "london": "WAT",
     "weymouth": "WEY",
+    "wareham": "WRM",
+    "hamworthy": "HAM",
 }
 
 _STATION_LOOKUP = None

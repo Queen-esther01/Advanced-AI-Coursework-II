@@ -52,6 +52,12 @@ class VectorStore:
     def count(self) -> int:
         return self.collection.count()
 
+    def delete_ids(self, ids: list[str]) -> int:
+        if not ids:
+            return 0
+        self.collection.delete(ids=ids)
+        return len(ids)
+
     def add_chunks(self, chunks: list[dict]) -> int:
         if not chunks:
             print("VectorStore: no chunks to add")

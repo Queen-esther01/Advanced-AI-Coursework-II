@@ -67,6 +67,10 @@ def _format_image_description(result: dict[str, str]) -> str:
     return f"[Image: {result['suggested_filename']}] {result['caption']} {result['description']}".strip()
 
 
+def _is_cpt_hub_slide(title: str) -> bool:
+    return "Plan" not in title and "\t" not in title
+
+
 def _format_slide_guide(section: str, result: dict[str, str]) -> str:
     guide = (result.get("guide") or "").strip()
     if not guide:
@@ -269,13 +273,20 @@ class DataChunker:
             result = cached
         else:
             print(f"  LLM describing: {image_path.name} ({section_title})")
-            result = self.llm_client.describe_image(
-                extracted,
-                prompt=image_description_prompt(doc_kind),
-                section_title=section_title,
-                original_filename=alt,
-                slide_text=slide_text,
-            )
+            try:
+                result = self.llm_client.describe_image(
+                    extracted,
+                    prompt=image_description_prompt(doc_kind),
+                    section_title=section_title,
+                    original_filename=alt,
+                    slide_text=slide_text,
+                )
+            except Exception as exc:
+                print(
+                    f"  LLM describe failed: file={image_path.name} section={section_title} "
+                    f"station={station} kind={doc_kind} error={exc!r}"
+                )
+                raise
             result["extracted_path"] = str(extracted)
             result["source_path"] = str(cache_path.resolve())
             result["section"] = section_title
@@ -329,14 +340,21 @@ class DataChunker:
             return vision_result
 
         print(f"  LLM guide: {section}")
-        guide_result = self.llm_client.generate_slide_guide(
-            prompt=slide_guide_prompt(doc_kind),
-            section_title=section,
-            slide_text=slide_text,
-            image_description=vision_result,
-        )
+        try:
+            guide_result = self.llm_client.generate_slide_guide(
+                prompt=slide_guide_prompt(doc_kind),
+                section_title=section,
+                slide_text=slide_text,
+                image_description=vision_result,
+            )
+        except Exception as exc:
+            print(
+                f"  LLM guide failed: section={section} kind={doc_kind} "
+                f"error={exc!r}"
+            )
+            raise
         merged = {**vision_result, **guide_result}
-        if self.image_cache:
+        if self.image_cache and (merged.get("guide") or "").strip():
             self.image_cache.set(cache_path, merged)
         return merged
 
@@ -354,6 +372,9 @@ class DataChunker:
         n = entry["slide_number"]
         title = entry.get("title") or f"Slide {n}"
         section = f"Slide {n}: {title}"
+        if _is_cpt_hub_slide(title):
+            print(f"  Skip CPT hub/title slide: {section}")
+            return None
         slide_text = entry.get("text", "")
         cache_path = image_path.resolve()
 
@@ -363,13 +384,20 @@ class DataChunker:
             vision_result = cached
         else:
             print(f"  LLM describing: {image_path.name} ({section})")
-            vision_result = self.llm_client.describe_image(
-                cache_path,
-                prompt=image_description_prompt(doc_kind),
-                section_title=section,
-                original_filename=image_path.name,
-                slide_text=slide_text,
-            )
+            try:
+                vision_result = self.llm_client.describe_image(
+                    cache_path,
+                    prompt=image_description_prompt(doc_kind),
+                    section_title=section,
+                    original_filename=image_path.name,
+                    slide_text=slide_text,
+                )
+            except Exception as exc:
+                print(
+                    f"  LLM describe failed: slide={n} file={image_path.name} "
+                    f"section={section} station={station} kind={doc_kind} error={exc!r}"
+                )
+                raise
             vision_result["extracted_path"] = str(cache_path)
             vision_result["source_path"] = str(cache_path)
             vision_result["section"] = section

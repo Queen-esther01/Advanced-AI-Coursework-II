@@ -5,13 +5,15 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from incident_handler import (
+from llm_client import LLMClient
+from task_3.incident_handler import (
     IncidentState,
+    incident_slots_complete,
     is_incident_intent,
     process_incident_input,
     reset_incident_state,
 )
-from llm_client import LLMClient
+from task_3.indexing.vector_store import VectorStore
 
 # Task1 Imports
 from ticket_finder import TicketState, is_ticket_intent, process_ticket_input
@@ -35,11 +37,15 @@ Do not ask for stops remaining, remaining journey time, or expected arrival
 time at the destination. Those are calculated automatically by the tools.
 
 Keep replies concise and conversational. Ask only one or two questions at a
-time. When you know the current location and destination, call
-check_station_coverage before attempting a prediction. If coverage is confirmed,
-call get_train_delay with train_journey, current_location, destination,
-current_delay, and planned_time_at_current_stop.
+time. When you know the current location and destination, you MUST call
+check_station_coverage before saying whether stations are on the route.
+If coverage is confirmed, call get_train_delay with train_journey,
+current_location, destination, current_delay, and planned_time_at_current_stop.
 Use get_covered_stations if the passenger asks which stations are supported.
+
+Never tell the passenger a station is outside the route without calling
+check_station_coverage first. Wareham, Hamworthy, Poole, and Bournemouth are
+on the Dorset section of this line.
 
 After a tool returns a prediction, explain the expected delay clearly to the
 passenger using the predicted_delay_minutes and reason fields. Do not invent
@@ -78,12 +84,16 @@ def _processing_label(
     ticket_state: TicketState,
     incident_state: IncidentState,
 ) -> str:
-    if incident_state.stage != "idle" or is_incident_intent(user_input):
-        if incident_state.stage == "collecting" or is_incident_intent(user_input):
-            return "Looking up contingency plans..."
-        return "Generating contingency advice..."
-    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
+    ticket_active = ticket_state.stage != "idle" or is_ticket_intent(user_input)
+    incident_active = incident_state.stage != "idle" or is_incident_intent(user_input)
+    if ticket_active and (not incident_active or ticket_state.stage != "idle"):
         return "Processing your journey details..."
+    if incident_active:
+        if not incident_state.staff_role or incident_state.pending_slot == "staff_role":
+            return "Collecting your role and incident details..."
+        if incident_state.pending_slot or not incident_slots_complete(incident_state):
+            return "Collecting disruption details..."
+        return "Looking up contingency plans..."
     return "Thinking..."
 
 
@@ -119,6 +129,9 @@ if "ticket_state" not in st.session_state:
 if "incident_state" not in st.session_state:
     st.session_state.incident_state = IncidentState()
 
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = VectorStore()
+
 # Display all previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -131,10 +144,18 @@ for message in st.session_state.messages:
             st.markdown(message["content"])
 
 
-def process_user_input(user_input, ticket_state, incident_state) -> HandlerResult:
+def process_user_input(
+    user_input,
+    ticket_state,
+    incident_state,
+    *,
+    progress=None,
+    vector_store: VectorStore | None = None,
+) -> HandlerResult:
     """
     Decide whether to handle with ticket state machine or LLM.
     """
+    store = vector_store or st.session_state.vector_store
     lower_input = user_input.lower()
     if lower_input == "reset":
         ticket_state.__dict__.update(TicketState().__dict__)
@@ -149,18 +170,24 @@ def process_user_input(user_input, ticket_state, incident_state) -> HandlerResul
                 user_input,
                 incident_state,
                 llm_client=DISRUPTION_LLM,
+                vector_store=store,
+                progress=progress,
             )
             return HandlerResult(text=reply, images=_paths_to_strings(images))
-    if incident_state.stage != "idle" or is_incident_intent(user_input):
+    ticket_active = ticket_state.stage != "idle" or is_ticket_intent(user_input)
+    incident_active = incident_state.stage != "idle" or is_incident_intent(user_input)
+    if ticket_active and (not incident_active or ticket_state.stage != "idle"):
+        reply = process_ticket_input(user_input, ticket_state)
+        return HandlerResult(text=reply)
+    if incident_active:
         reply, images = process_incident_input(
             user_input,
             incident_state,
             llm_client=DISRUPTION_LLM,
+            vector_store=store,
+            progress=progress,
         )
         return HandlerResult(text=reply, images=_paths_to_strings(images))
-    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
-        reply = process_ticket_input(user_input, ticket_state)
-        return HandlerResult(text=reply)
     return HandlerResult(use_llm=True)
 
 
@@ -175,18 +202,17 @@ if prompt := st.chat_input("Type a message..."):
     label = _processing_label(prompt, ticket_state, incident_state)
 
     with st.chat_message("assistant"):
+        ticket_active = ticket_state.stage != "idle" or is_ticket_intent(prompt)
+        incident_active = incident_state.stage != "idle" or is_incident_intent(prompt)
         will_use_llm = (
-            ticket_state.stage == "idle"
-            and incident_state.stage == "idle"
-            and not is_incident_intent(prompt)
-            and not is_ticket_intent(prompt)
+            not ticket_active
+            and not incident_active
             and prompt.lower() not in ("reset", "yes", "bye")
         )
 
         if will_use_llm:
             with st.spinner("Thinking..."):
-                result = process_user_input(prompt, ticket_state, incident_state)
-                stream = llm_client.stream_reply(st.session_state.messages)
+                stream = llm_client.stream_delay_assistant(st.session_state.messages)
                 try:
                     first_chunk = next(stream)
                 except StopIteration:
@@ -200,8 +226,18 @@ if prompt := st.chat_input("Type a message..."):
                 reply = st.write_stream(stream_from_first()) or ""
             st.session_state.messages.append({"role": "assistant", "content": reply})
         else:
-            with st.spinner(label):
-                result = process_user_input(prompt, ticket_state, incident_state)
+            with st.status(label, expanded=False) as status:
+
+                def on_progress(message: str) -> None:
+                    status.update(label=message)
+
+                result = process_user_input(
+                    prompt,
+                    ticket_state,
+                    incident_state,
+                    progress=on_progress,
+                    vector_store=st.session_state.vector_store,
+                )
             reply = result.text or ""
             render_assistant_content(reply, result.images)
             msg: dict = {"role": "assistant", "content": reply}

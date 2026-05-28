@@ -2,12 +2,11 @@ import csv
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
+
+from config import DATA_DIR
 
 
-_STATIONS_CSV = (
-    Path(__file__).resolve().parent.parent / "data" / "disruption_plans" / "stations.csv"
-)
+_STATIONS_CSV = DATA_DIR / "disruption_plans" / "stations.csv"
 
 
 @dataclass(frozen=True)

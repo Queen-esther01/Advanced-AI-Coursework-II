@@ -1,4 +1,4 @@
-from expert._compat import patch_collections
+from task_3.expert._compat import patch_collections
 
 patch_collections()
 

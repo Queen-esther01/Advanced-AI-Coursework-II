@@ -1,11 +1,13 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from expert.facts import Incident, WantsInfo
-from expert.incident_engine import IncidentEngine
-from expert.plan_retriever import image_paths_from_chunks, retrieve_plans
-from expert.response_builder import build_disruption_reply
-from expert.slot_parser import (
+from llm_client import LLMClient
+from task_3.expert.facts import Incident, WantsInfo
+from task_3.expert.incident_engine import IncidentEngine
+from task_3.expert.plan_retriever import image_paths_from_chunks, retrieve_plans
+from task_3.expert.response_builder import build_disruption_reply
+from task_3.expert.slot_parser import (
     apply_message_slots,
     friendly_station_label,
     mentions_blockage,
@@ -13,10 +15,10 @@ from expert.slot_parser import (
     parse_single_station_answer,
     parse_station_correction,
 )
-from expert.station_index import INDEXED_STATION_HINT
-from indexing.vector_store import VectorStore
-from llm_client import LLMClient
+from task_3.expert.station_index import INDEXED_STATION_HINT
+from task_3.indexing.vector_store import VectorStore
 
+ProgressCallback = Callable[[str], None] | None
 INCIDENT_KEYWORDS = (
     "blockage",
     "blocked",
@@ -40,6 +42,25 @@ UNRECOGNISED_STATION = (
     "**London Waterloo**) or a **3-letter CRS code** (e.g. **WAT**, **WEY**)."
 )
 
+_PASSENGER_BOOKING_HINTS = (
+    "ticket",
+    "tickets",
+    "cheapest",
+    "cheap fare",
+    "fare",
+    "book a",
+    "book ",
+    "buy a",
+    "buy ",
+    "need a ticket",
+    "want a ticket",
+    "get a ticket",
+    "travel from",
+    "travelling from",
+    "going from",
+    "journey from",
+)
+
 
 @dataclass
 class IncidentState:
@@ -60,15 +81,38 @@ class IncidentState:
     pending_slot: str | None = None
 
 
+def _is_passenger_booking_intent(user_input: str) -> bool:
+    lower = user_input.lower()
+    return any(hint in lower for hint in _PASSENGER_BOOKING_HINTS)
+
+
 def is_incident_intent(user_input: str) -> bool:
     lower = user_input.lower()
+    if _is_passenger_booking_intent(user_input):
+        return False
     if any(kw in lower for kw in INCIDENT_KEYWORDS):
-        return True
-    if parse_line_endpoints(user_input) != (None, None):
         return True
     if mentions_blockage(user_input):
         return True
+    if parse_line_endpoints(user_input) != (None, None):
+        return any(kw in lower for kw in INCIDENT_KEYWORDS) or mentions_blockage(user_input)
     return False
+
+
+def incident_slots_complete(state: IncidentState) -> bool:
+    if not state.staff_role:
+        return False
+    if state.event_type == "station_disruption":
+        return bool(state.station)
+    if state.event_type != "line_blockage":
+        return False
+    if not (
+        state.from_station and state.to_station and state.severity and state.staff_role
+    ):
+        return False
+    if state.severity == "both_lines_blocked":
+        return state.incident_time is not None and state.duration_minutes is not None
+    return True
 
 
 def reset_incident_state(state: IncidentState) -> None:
@@ -169,12 +213,18 @@ def _slot_prompt(state: IncidentState) -> str | None:
     return prompts.get(state.pending_slot or "")
 
 
+def _report_progress(progress: ProgressCallback, message: str) -> None:
+    if progress:
+        progress(message)
+
+
 def process_incident_input(
     user_input: str,
     state: IncidentState,
     *,
     llm_client: LLMClient,
     vector_store: VectorStore | None = None,
+    progress: ProgressCallback = None,
 ) -> tuple[str, list[Path]]:
     lower = user_input.lower().strip()
 
@@ -186,7 +236,7 @@ def process_incident_input(
         if not is_incident_intent(user_input):
             return (
                 "I can help with **line blockages** and **station disruptions** using SWR contingency plans. "
-                "Describe the incident (location, severity, and whether you need staff or passenger advice)."
+                "Say what happened, or start with your role: **signaller**, **station staff**, or **control**."
             ), []
         state.stage = "collecting"
 
@@ -222,7 +272,11 @@ def process_incident_input(
     state.derived_actions = list(engine.derived_actions)
 
     if engine.action == "retrieve" and engine.retrieval_query and engine.plan_source:
+        _report_progress(progress, "Searching contingency plans...")
         store = vector_store or VectorStore()
+        route_stations = None
+        if state.from_station and state.to_station:
+            route_stations = [state.from_station, state.to_station]
         chunks = retrieve_plans(
             store,
             query=engine.retrieval_query,
@@ -231,6 +285,7 @@ def process_incident_input(
             staff_role=engine.role_focus or state.staff_role,
             service_period=engine.time_focus or state.service_period,
             derived_actions=state.derived_actions,
+            route_stations=route_stations,
         )
         if not chunks and engine.station_filter:
             state.stage = "collecting"
@@ -241,6 +296,7 @@ def process_incident_input(
                 f"Plans currently available for: {INDEXED_STATION_HINT}. "
                 "Try the full name or a CRS code (**WEY**, **WAT**)."
             ), []
+        _report_progress(progress, "Summarising staff and passenger advice...")
         images = image_paths_from_chunks(chunks)
         reply = build_disruption_reply(
             chunks,
@@ -264,7 +320,6 @@ def process_incident_input(
 
     state.stage = "collecting"
     return (
-        "I need a bit more detail. Say whether this is a **line blockage** (between two stations) "
-        "or a **station disruption**, the location, severity if known, and what you need "
-        "(staff / passengers / contacts / routes)."
+        "I need a bit more detail. Tell me your role (**signaller**, **station staff**, **control**), "
+        "where the disruption is, and whether it is a **line blockage** or **station disruption**."
     ), []

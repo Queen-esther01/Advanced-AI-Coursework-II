@@ -1,10 +1,11 @@
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import chromadb
 
-from expert.station_index import metadata_station_values
-from indexing.vector_store import VectorStore
+from task_3.expert.station_index import metadata_station_values
+from task_3.indexing.vector_store import VectorStore
 
 _BOILERPLATE_SECTIONS = ("introduction", "top tips", "contents", "document control", "issue")
 _OPERATIONAL_SECTIONS = (
@@ -67,16 +68,33 @@ def _keyword_hits(text: str, keywords: tuple[str, ...]) -> float:
     return float(sum(1 for keyword in keywords if keyword in lower))
 
 
+def _station_route_boost(chunk: RetrievedChunk, route_stations: list[str] | None) -> float:
+    if not route_stations:
+        return 0.0
+    haystack = f"{chunk.metadata.get('section', '')} {chunk.text}".lower()
+    score = 0.0
+    for station in route_stations:
+        token = station.lower()
+        if token in haystack:
+            score += 2.5
+        for part in re.split(r"[\s\-]+", token):
+            if len(part) >= 4 and part in haystack:
+                score += 1.0
+    return score
+
+
 def _context_rank_boost(
     chunk: RetrievedChunk,
     *,
     staff_role: str | None,
     service_period: str | None,
     derived_actions: list[str] | None,
+    route_stations: list[str] | None = None,
 ) -> float:
     section = chunk.metadata.get("section", "")
     body = chunk.text
     score = _section_rank_boost(section)
+    score += _station_route_boost(chunk, route_stations)
     if staff_role and staff_role in _ROLE_TERMS:
         score += _keyword_hits(f"{section} {body}", _ROLE_TERMS[staff_role]) * 0.7
     if service_period and service_period in _TIME_TERMS:
@@ -94,6 +112,7 @@ def _rerank_chunks(
     staff_role: str | None,
     service_period: str | None,
     derived_actions: list[str] | None,
+    route_stations: list[str] | None = None,
 ) -> list[RetrievedChunk]:
     ranked = sorted(
         chunks,
@@ -103,6 +122,7 @@ def _rerank_chunks(
                 staff_role=staff_role,
                 service_period=service_period,
                 derived_actions=derived_actions,
+                route_stations=route_stations,
             ),
             c.distance if c.distance is not None else 999.0,
         ),
@@ -143,6 +163,7 @@ def retrieve_plans(
     staff_role: str | None = None,
     service_period: str | None = None,
     derived_actions: list[str] | None = None,
+    route_stations: list[str] | None = None,
     n_results: int = 6,
 ) -> list[RetrievedChunk]:
     if vector_store.count() == 0:
@@ -175,6 +196,7 @@ def retrieve_plans(
         staff_role=staff_role,
         service_period=service_period,
         derived_actions=derived_actions,
+        route_stations=route_stations,
     )
 
 

@@ -1,5 +1,5 @@
-from expert.plan_retriever import RetrievedChunk, format_context, source_labels
 from llm_client import LLMClient
+from task_3.expert.plan_retriever import RetrievedChunk, format_context, source_labels
 
 _LLM_FAILURE_MARKERS = (
     "I could not get a model response",
@@ -16,7 +16,7 @@ def _situation_header(*, event_type: str | None, station: str | None) -> str:
     if event_type == "station_disruption" and station:
         return f"**Station disruption at {station}** — from the indexed SWR station disruption plan:\n\n"
     if event_type == "line_blockage":
-        return "**Line blockage** — from the indexed contingency plan:\n\n"
+        return "**Line blockage** — Contingency plan:\n\n"
     return ""
 
 
