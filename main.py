@@ -5,12 +5,6 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from incident_handler import (
-    IncidentState,
-    is_incident_intent,
-    process_incident_input,
-    reset_incident_state,
-)
 from llm_client import LLMClient
 
 # Task2 Imports
@@ -64,11 +58,15 @@ Do not ask for stops remaining, remaining journey time, or expected arrival
 time at the destination. Those are calculated automatically by the tools.
 
 Keep replies concise and conversational. Ask only one or two questions at a
-time. When you know the current location and destination, call
-check_station_coverage before attempting a prediction. If coverage is confirmed,
-call get_train_delay with train_journey, current_location, destination,
-current_delay, and planned_time_at_current_stop.
+time. When you know the current location and destination, you MUST call
+check_station_coverage before saying whether stations are on the route.
+If coverage is confirmed, call get_train_delay with train_journey,
+current_location, destination, current_delay, and planned_time_at_current_stop.
 Use get_covered_stations if the passenger asks which stations are supported.
+
+Never tell the passenger a station is outside the route without calling
+check_station_coverage first. Wareham, Hamworthy, Poole, and Bournemouth are
+on the Dorset section of this line.
 
 After a tool returns a prediction, explain the expected delay clearly to the
 passenger using the predicted_delay_minutes and reason fields. Do not invent
@@ -123,6 +121,12 @@ def _processing_label(
         return "Generating contingency advice..."
     if ticket_state.stage != "idle" or is_ticket_intent(user_input):
         return "Processing your journey details..."
+    if incident_active:
+        if not incident_state.staff_role or incident_state.pending_slot == "staff_role":
+            return "Collecting your role and incident details..."
+        if incident_state.pending_slot or not incident_slots_complete(incident_state):
+            return "Collecting disruption details..."
+        return "Looking up contingency plans..."
     return "Thinking..."
 
 
@@ -164,6 +168,9 @@ if "journey_context" not in st.session_state:
     st.session_state.journey_context = {}
 if "incident_state" not in st.session_state:
     st.session_state.incident_state = IncidentState()
+
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = VectorStore()
 
 # Display all previous messages
 for message in st.session_state.messages:
