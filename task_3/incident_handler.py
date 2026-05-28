@@ -95,7 +95,9 @@ def is_incident_intent(user_input: str) -> bool:
     if mentions_blockage(user_input):
         return True
     if parse_line_endpoints(user_input) != (None, None):
-        return any(kw in lower for kw in INCIDENT_KEYWORDS) or mentions_blockage(user_input)
+        return any(kw in lower for kw in INCIDENT_KEYWORDS) or mentions_blockage(
+            user_input
+        )
     return False
 
 
@@ -250,6 +252,7 @@ def process_incident_input(
         state.event_type == "station_disruption"
         and correction
         and not state.pending_slot
+        and prev_pending not in ("staff_role", None)
     ):
         state.station = friendly_station_label(correction)
 

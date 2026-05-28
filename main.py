@@ -133,6 +133,9 @@ if "incident_state" not in st.session_state:
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = VectorStore()
 
+if "journey_context" not in st.session_state:
+    st.session_state.journey_context = {}
+
 # Display all previous messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -161,6 +164,7 @@ def process_user_input(
     if lower_input == "reset":
         ticket_state.__dict__.update(TicketState().__dict__)
         reset_incident_state(incident_state)
+        st.session_state.journey_context = {}
         return HandlerResult(text="Conversation reset. How can I help you?")
     if lower_input in ("yes", "bye"):
         if ticket_state.stage != "idle":
@@ -213,7 +217,10 @@ if prompt := st.chat_input("Type a message..."):
 
         if will_use_llm:
             with st.spinner("Thinking..."):
-                stream = llm_client.stream_delay_assistant(st.session_state.messages)
+                stream = llm_client.stream_delay_assistant(
+                    st.session_state.messages,
+                    journey_context=st.session_state.journey_context,
+                )
                 try:
                     first_chunk = next(stream)
                 except StopIteration:
