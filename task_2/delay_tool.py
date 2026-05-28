@@ -4,8 +4,8 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
-
 from task_2.historical_lookup import lookup_journey_metrics
+
 from task_2.utils import resolve_station_code
 
 MODEL_DIR = Path(__file__).parent / "models"
@@ -196,102 +196,101 @@ def get_train_delay(
 
 
 GET_TRAIN_DELAY_TOOL = {
-        "type": "function",
-        "function": {
-            "name": "get_train_delay",
-            "description": (
-                "Predict the expected final delay at the passenger's destination "
-                "for a WEY↔WAT service. Use when you have current location, "
-                "destination, current delay, and planned time at the current stop."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "train_journey": {
-                        "type": "string",
-                        "description": "Journey direction: 'WEY2WAT' or 'WAT2WEY'",
-                    },
-                    "current_location": {
-                        "type": "string",
-                        "description": "Station where the train currently is",
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "Passenger destination station",
-                    },
-                    "current_delay": {
-                        "type": "number",
-                        "description": (
-                            "Current delay in minutes at the present stop "
-                            "(negative if early)"
-                        ),
-                    },
-                    "planned_time_at_current_stop": {
-                        "type": "string",
-                        "description": (
-                            "Scheduled departure or arrival time at the current "
-                            "stop, e.g. '17:55', '5:55pm', or '14:30'"
-                        ),
-                    },
+    "type": "function",
+    "function": {
+        "name": "get_train_delay",
+        "description": (
+            "Predict the expected final delay at the passenger's destination "
+            "for a WEY↔WAT service. Use when you have current location, "
+            "destination, current delay, and planned time at the current stop."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "train_journey": {
+                    "type": "string",
+                    "description": "Journey direction: 'WEY2WAT' or 'WAT2WEY'",
                 },
-                "required": [
-                    "train_journey",
-                    "current_location",
-                    "destination",
-                    "current_delay",
-                    "planned_time_at_current_stop",
-                ],
+                "current_location": {
+                    "type": "string",
+                    "description": "Station where the train currently is",
+                },
+                "destination": {
+                    "type": "string",
+                    "description": "Passenger destination station",
+                },
+                "current_delay": {
+                    "type": "number",
+                    "description": (
+                        "Current delay in minutes at the present stop "
+                        "(negative if early)"
+                    ),
+                },
+                "planned_time_at_current_stop": {
+                    "type": "string",
+                    "description": (
+                        "Scheduled departure or arrival time at the current "
+                        "stop, e.g. '17:55', '5:55pm', or '14:30'"
+                    ),
+                },
             },
+            "required": [
+                "train_journey",
+                "current_location",
+                "destination",
+                "current_delay",
+                "planned_time_at_current_stop",
+            ],
         },
-    }
+    },
+}
 
 CHECK_STATION_COVERAGE_TOOL = {
-        "type": "function",
-        "function": {
-            "name": "check_station_coverage",
-            "description": (
-                "Check whether the current location and destination are on the "
-                "supported Weymouth ↔ Waterloo route. Call only once when the "
-                "passenger first gives stations, or when they change stations — "
-                "not on every follow-up question."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "current_location": {
-                        "type": "string",
-                        "description": "Station where the train currently is",
-                    },
-                    "destination": {
-                        "type": "string",
-                        "description": "Passenger destination station",
-                    },
+    "type": "function",
+    "function": {
+        "name": "check_station_coverage",
+        "description": (
+            "Check whether the current location and destination are on the "
+            "supported Weymouth ↔ Waterloo route. Call only once when the "
+            "passenger first gives stations, or when they change stations — "
+            "not on every follow-up question."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "current_location": {
+                    "type": "string",
+                    "description": "Station where the train currently is",
                 },
-                "required": ["current_location", "destination"],
+                "destination": {
+                    "type": "string",
+                    "description": "Passenger destination station",
+                },
             },
+            "required": ["current_location", "destination"],
         },
-    }
+    },
+}
 
 GET_COVERED_STATIONS_TOOL = {
-        "type": "function",
-        "function": {
-            "name": "get_covered_stations",
-            "description": (
-                "Return the ordered list of stations covered for a journey "
-                "direction."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "journey": {
-                        "type": "string",
-                        "description": "Journey direction: 'WEY2WAT' or 'WAT2WEY'",
-                    }
-                },
-                "required": ["journey"],
+    "type": "function",
+    "function": {
+        "name": "get_covered_stations",
+        "description": (
+            "Return the ordered list of stations covered for a journey direction."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "journey": {
+                    "type": "string",
+                    "description": "Journey direction: 'WEY2WAT' or 'WAT2WEY'",
+                }
             },
+            "required": ["journey"],
         },
-    }
+    },
+}
 
 tools = [
     GET_TRAIN_DELAY_TOOL,
