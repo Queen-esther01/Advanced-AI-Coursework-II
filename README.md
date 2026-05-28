@@ -63,3 +63,5 @@ uv add python-dotenv
 
 ### ENVs to add
 OPENROUTER_API_KEY
+
+### Download the compressed .store directory and extract it into the root directory
