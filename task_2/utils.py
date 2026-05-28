@@ -4,21 +4,125 @@ import re
 import pandas as pd
 
 WEY2WAT_STOP_CODES = [
-    "WEY", "UPW", "DCH", "MTN", "WRM", "WOO", "HAM", "HOL", "PKS", "POO",
-    "BSM", "BMH", "POK", "CHR", "BCU", "NWM", "SOU", "HNA", "SOA", "SWG",
-    "WIN", "FRM", "SWY", "WOK", "HAV", "SDN", "HSL", "BEU", "KWB", "GLD",
-    "ANF", "BSK", "WIM", "WBY", "TTN", "CLJ", "BFN", "RDB", "WPL", "HOK",
-    "WYB", "ESL", "FNB", "MBK", "WNF", "FLE", "PTC", "WAL", "SUR", "SHW",
-    "HER", "CSA", "MIC", "ESH", "BKO", "SNS", "EAD", "VXH", "WAT",
+    "WEY",
+    "UPW",
+    "DCH",
+    "MTN",
+    "WRM",
+    "WOO",
+    "HAM",
+    "HOL",
+    "PKS",
+    "POO",
+    "BSM",
+    "BMH",
+    "POK",
+    "CHR",
+    "BCU",
+    "NWM",
+    "SOU",
+    "HNA",
+    "SOA",
+    "SWG",
+    "WIN",
+    "FRM",
+    "SWY",
+    "WOK",
+    "HAV",
+    "SDN",
+    "HSL",
+    "BEU",
+    "KWB",
+    "GLD",
+    "ANF",
+    "BSK",
+    "WIM",
+    "WBY",
+    "TTN",
+    "CLJ",
+    "BFN",
+    "RDB",
+    "WPL",
+    "HOK",
+    "WYB",
+    "ESL",
+    "FNB",
+    "MBK",
+    "WNF",
+    "FLE",
+    "PTC",
+    "WAL",
+    "SUR",
+    "SHW",
+    "HER",
+    "CSA",
+    "MIC",
+    "ESH",
+    "BKO",
+    "SNS",
+    "EAD",
+    "VXH",
+    "WAT",
 ]
 
 WAT2WEY_STOP_CODES = [
-    "WAT", "VXH", "CLJ", "WOK", "WIM", "EFF", "VIR", "SNS", "BSK", "GLD",
-    "WIN", "FNB", "SUR", "ESH", "HSL", "HAV", "SOA", "PTR", "HER", "WYB",
-    "BKO", "FRM", "SOU", "FLE", "WAL", "MIC", "SHW", "ESL", "BCU", "BFN",
-    "SWG", "HOK", "WNF", "WBY", "BMH", "NWM", "SDN", "BSM", "TTN", "MBK",
-    "ANF", "RDB", "PKS", "CHR", "POK", "POO", "BEU", "HAM", "SWY", "WRM",
-    "HOL", "HNA", "WOO", "DCH", "MTN", "UPW", "WEY",
+    "WAT",
+    "VXH",
+    "CLJ",
+    "WOK",
+    "WIM",
+    "EFF",
+    "VIR",
+    "SNS",
+    "BSK",
+    "GLD",
+    "WIN",
+    "FNB",
+    "SUR",
+    "ESH",
+    "HSL",
+    "HAV",
+    "SOA",
+    "PTR",
+    "HER",
+    "WYB",
+    "BKO",
+    "FRM",
+    "SOU",
+    "FLE",
+    "WAL",
+    "MIC",
+    "SHW",
+    "ESL",
+    "BCU",
+    "BFN",
+    "SWG",
+    "HOK",
+    "WNF",
+    "WBY",
+    "BMH",
+    "NWM",
+    "SDN",
+    "BSM",
+    "TTN",
+    "MBK",
+    "ANF",
+    "RDB",
+    "PKS",
+    "CHR",
+    "POK",
+    "POO",
+    "BEU",
+    "HAM",
+    "SWY",
+    "WRM",
+    "HOL",
+    "HNA",
+    "WOO",
+    "DCH",
+    "MTN",
+    "UPW",
+    "WEY",
 ]
 
 _SUPPORTED_STOP_CODES = set(WEY2WAT_STOP_CODES) | set(WAT2WEY_STOP_CODES)
@@ -113,9 +217,7 @@ def build_system_prompt(journey_context):
         f"({journey_context.get('destination_station_code', '?')})",
     ]
     if journey_context.get("current_delay") is not None:
-        lines.append(
-            f"- current_delay (minutes): {journey_context['current_delay']}"
-        )
+        lines.append(f"- current_delay (minutes): {journey_context['current_delay']}")
     if journey_context.get("planned_time_at_current_stop"):
         lines.append(
             "- planned_time_at_current_stop: "
@@ -128,7 +230,9 @@ def build_system_prompt(journey_context):
     return prompt + "\n".join(lines)
 
 
-def update_journey_context_from_tool(journey_context, tool_name, arguments_json, result):
+def update_journey_context_from_tool(
+    journey_context, tool_name, arguments_json, result
+):
     """Remember journey details from tool results for later turns in this chat."""
     try:
         arguments = json.loads(arguments_json or "{}")
@@ -259,7 +363,9 @@ def sync_journey_context_from_messages(journey_context, messages):
                 journey_context["current_location"] = _title_station(match.group(1))
                 journey_context["destination"] = _title_station(match.group(2))
                 break
-        if journey_context.get("current_location") and journey_context.get("destination"):
+        if journey_context.get("current_location") and journey_context.get(
+            "destination"
+        ):
             break
 
     for text in reversed(texts):
@@ -283,9 +389,9 @@ def sync_journey_context_from_messages(journey_context, messages):
             continue
         if _last_assistant_asks_for(messages, "destination"):
             journey_context["destination"] = station
-        elif _last_assistant_asks_for(messages, "current station") or _last_assistant_asks_for(
-            messages, "current location"
-        ):
+        elif _last_assistant_asks_for(
+            messages, "current station"
+        ) or _last_assistant_asks_for(messages, "current location"):
             journey_context["current_location"] = station
         elif not journey_context.get("current_location"):
             journey_context["current_location"] = station
