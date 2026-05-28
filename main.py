@@ -7,20 +7,6 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from llm_client import LLMClient
-
-# Task2 Imports
-from task_2.delay_tool import get_tools_for_session
-from task_2.utils import (
-    MAX_TOOL_ROUNDS,
-    SYSTEM_PROMPT,
-    build_system_prompt,
-    clean_model_text,
-    execute_tool_call,
-    has_delay_inputs,
-    merge_stream_tool_calls,
-    tool_calls_from_accumulator,
-    update_journey_context_from_tool,
-)
 from task_3.incident_handler import (
     IncidentState,
     incident_slots_complete,
@@ -31,17 +17,10 @@ from task_3.incident_handler import (
 from task_3.indexing.vector_store import VectorStore
 
 # Task1 Imports
-# Task1 Imports
-from ticket_finder import (
-    TicketState,
-    is_ticket_intent,
-    process_ticket_input,
-    reset_ticket_state,
-)
+from ticket_finder import TicketState, is_ticket_intent, process_ticket_input
 
 load_dotenv(verbose=True)
 
-MODEL_NAME = "openai/gpt-4o-mini"
 SYSTEM_PROMPT = """
 You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
 London Waterloo (WAT) and vice versa.
@@ -116,18 +95,6 @@ def _processing_label(
         if incident_state.pending_slot or not incident_slots_complete(incident_state):
             return "Collecting disruption details..."
         return "Looking up contingency plans..."
-    if incident_state.stage != "idle" or is_incident_intent(user_input):
-        if incident_state.stage == "collecting" or is_incident_intent(user_input):
-            return "Looking up contingency plans..."
-        return "Generating contingency advice..."
-    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
-        return "Processing your journey details..."
-    if incident_active:
-        if not incident_state.staff_role or incident_state.pending_slot == "staff_role":
-            return "Collecting your role and incident details..."
-        if incident_state.pending_slot or not incident_slots_complete(incident_state):
-            return "Collecting disruption details..."
-        return "Looking up contingency plans..."
     return "Thinking..."
 
 
@@ -160,13 +127,6 @@ if "messages" not in st.session_state:
 if "ticket_state" not in st.session_state:
     st.session_state.ticket_state = TicketState()
 
-if "incident_state" not in st.session_state:
-    st.session_state.incident_state = IncidentState()
-
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = VectorStore()
-if "journey_context" not in st.session_state:
-    st.session_state.journey_context = {}
 if "incident_state" not in st.session_state:
     st.session_state.incident_state = IncidentState()
 
@@ -234,10 +194,6 @@ def process_user_input(
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
-    if prompt.strip().lower() == "reset":
-        st.session_state.journey_context = {}
-
-    # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -252,10 +208,6 @@ if prompt := st.chat_input("Type a message..."):
         will_use_llm = (
             not ticket_active
             and not incident_active
-            and ticket_state.stage == "idle"
-            and incident_state.stage == "idle"
-            and not is_incident_intent(prompt)
-            and not is_ticket_intent(prompt)
             and prompt.lower() not in ("reset", "yes", "bye")
         )
 
