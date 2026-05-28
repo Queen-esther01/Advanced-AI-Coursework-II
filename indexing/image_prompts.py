@@ -81,9 +81,10 @@ def document_kind(path: Path) -> str:
     ext = path.suffix.lower()
     if ext in (".pptx", ".pptm"):
         return "cpt_presentation"
-    if ext in (".docx", ".docm"):
+    if ext.startswith(".doc"):
         return "station_plan"
-    raise ValueError(f"Unsupported document type for image prompts: {path}")
+    else:
+        raise ValueError(f"Unsupported document type for image prompts: {path}")
 
 
 def image_description_prompt(kind: str) -> str:
