@@ -5,6 +5,12 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
+from incident_handler import (
+    IncidentState,
+    is_incident_intent,
+    process_incident_input,
+    reset_incident_state,
+)
 from llm_client import LLMClient
 
 # Task2 Imports
@@ -111,6 +117,12 @@ def _processing_label(
         if incident_state.pending_slot or not incident_slots_complete(incident_state):
             return "Collecting disruption details..."
         return "Looking up contingency plans..."
+    if incident_state.stage != "idle" or is_incident_intent(user_input):
+        if incident_state.stage == "collecting" or is_incident_intent(user_input):
+            return "Looking up contingency plans..."
+        return "Generating contingency advice..."
+    if ticket_state.stage != "idle" or is_ticket_intent(user_input):
+        return "Processing your journey details..."
     return "Thinking..."
 
 
@@ -150,6 +162,8 @@ if "vector_store" not in st.session_state:
     st.session_state.vector_store = VectorStore()
 if "journey_context" not in st.session_state:
     st.session_state.journey_context = {}
+if "incident_state" not in st.session_state:
+    st.session_state.incident_state = IncidentState()
 
 # Display all previous messages
 for message in st.session_state.messages:
@@ -230,6 +244,10 @@ if prompt := st.chat_input("Type a message..."):
         will_use_llm = (
             not ticket_active
             and not incident_active
+            and ticket_state.stage == "idle"
+            and incident_state.stage == "idle"
+            and not is_incident_intent(prompt)
+            and not is_ticket_intent(prompt)
             and prompt.lower() not in ("reset", "yes", "bye")
         )
 

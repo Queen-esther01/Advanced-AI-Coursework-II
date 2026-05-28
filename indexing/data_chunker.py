@@ -10,25 +10,45 @@ from llm_client import LLMClient
 from .doc_parser import (
     chunk_markdown,
     parse_image_markdown,
+    read_doc,
     read_docx,
     read_pptx_slides,
 )
 from .image_prompts import document_kind, image_description_prompt, slide_guide_prompt
 
-DEFAULT_DOCUMENT_GLOBS = ("**/*.docx", "**/*.docm", "**/*.pptm", "**/*.pptx")
+DEFAULT_DOCUMENT_GLOBS = (
+    "**/*.docx",
+    "**/*.docm",
+    "**/*.doc",
+    "**/*.pptm",
+    "**/*.pptx",
+)
 
 DEFAULT_CACHE_PATH = IMAGE_DESCRIPTIONS_CACHE_PATH
 DEFAULT_EXTRACTED_MEDIA_DIR = EXTRACTED_MEDIA_DIR
 
 
+def _canonical_station_from_extracted(name: str) -> str:
+    lower = name.strip().lower()
+    if lower == "waterloo":
+        return "London Waterloo"
+    return name.strip()
+
+
 def _station_name_from_path(path: Path) -> str:
     stem = path.stem
-    match = re.search(r"Plan - (.+?) Issue", stem)
-    if match:
-        return match.group(1)
+    patterns = (
+        r"Station Disruption Plan\s+(.+?)\s*-\s*Issue",
+        r"Station Disruption Plan\s*-\s*(.+?)\s+Issue",
+        r"Plan - (.+?) Issue",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, stem, re.I)
+        if match:
+            return _canonical_station_from_extracted(match.group(1))
     match = re.search(r"^(.+?)\s+CPT\b", stem, re.IGNORECASE)
     if match:
-        return match.group(1).strip()
+        return _canonical_station_from_extracted(match.group(1))
     return stem
 
 
@@ -446,6 +466,8 @@ class DataChunker:
             slides_dir = self.extracted_media_dir / _station_slug(station) / "slides"
             content, manifest = read_pptx_slides(path, slides_dir)
             return content, kind, manifest
+        if path.suffix.lower() == ".doc":
+            return read_doc(path), kind, None
         return read_docx(path), kind, None
 
     def chunk_file(self, path: Path, metadata: dict | None = None) -> list[dict]:

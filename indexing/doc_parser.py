@@ -433,6 +433,36 @@ def parse_image_markdown(line: str) -> tuple[str, Path] | None:
     return match.group("alt"), Path(match.group("path"))
 
 
+def _libreoffice_convert(source: Path, out_dir: Path, fmt: str) -> Path:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise RuntimeError(
+            "LibreOffice not found. Install it (e.g. brew install --cask libreoffice) "
+            "to read legacy Word .doc files."
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            soffice,
+            "--headless",
+            "--convert-to",
+            fmt,
+            "--outdir",
+            str(out_dir),
+            str(source.resolve()),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"LibreOffice failed:\n{result.stderr or result.stdout}")
+    ext = f".{fmt}" if not fmt.startswith(".") else fmt
+    converted = out_dir / f"{source.stem}{ext}"
+    if not converted.is_file():
+        raise FileNotFoundError(f"Expected converted file not found: {converted}")
+    return converted
+
+
 def _image_output_dir(source, image_dir=None):
     source = Path(source)
     if image_dir is not None:
@@ -581,6 +611,19 @@ def read_docx(file, image_dir=None, convert_vector=True):
     return _blocks_to_markdown(blocks)
 
 
+def read_doc(file, image_dir=None, convert_vector=True):
+    source = Path(file)
+    convert_dir = source.parent / f"{source.stem}_converted"
+    docx_path = convert_dir / f"{source.stem}.docx"
+    if not docx_path.is_file() or docx_path.stat().st_mtime < source.stat().st_mtime:
+        _libreoffice_convert(source, convert_dir, "docx")
+    return read_docx(
+        docx_path,
+        image_dir=image_dir or _image_output_dir(source),
+        convert_vector=convert_vector,
+    )
+
+
 _RASTER_IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp"})
 
 
@@ -681,6 +724,57 @@ def read_pptx_slides(
 
 
 def chunk_markdown(md: str, metadata: dict):
+    max_chars = 1500
+    overlap_chars = 150
+
+    def _split_large_section(text: str) -> list[str]:
+        if len(text) <= max_chars:
+            return [text]
+
+        lines = text.splitlines()
+        if not lines:
+            return [text]
+
+        heading = lines[0]
+        body = "\n".join(lines[1:]).strip()
+        if not body:
+            return [text]
+
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        if not paragraphs:
+            return [text]
+
+        windows: list[str] = []
+        current = heading
+
+        for paragraph in paragraphs:
+            candidate = f"{current}\n\n{paragraph}" if current else paragraph
+            if len(candidate) <= max_chars:
+                current = candidate
+                continue
+
+            if current and current != heading:
+                windows.append(current)
+            elif len(candidate) > max_chars:
+                start = 0
+                while start < len(paragraph):
+                    end = min(start + max_chars, len(paragraph))
+                    piece = paragraph[start:end]
+                    window = f"{heading}\n\n{piece}"
+                    windows.append(window)
+                    if end == len(paragraph):
+                        break
+                    start = max(0, end - overlap_chars)
+                current = heading
+                continue
+
+            current = f"{heading}\n\n{paragraph}"
+
+        if current and current != heading:
+            windows.append(current)
+
+        return windows or [text]
+
     md = deserialize_tables_in_markdown(md.strip())
     parts = re.split(r"(?=(?:(?<=\n)|^)#{1,6} )", md)
     chunks = []
@@ -689,12 +783,23 @@ def chunk_markdown(md: str, metadata: dict):
         if not part or re.match(r"^#{1,6}\s+Contents\b", part):
             continue
         title = re.sub(r"^#{1,6}\s+", "", part.split("\n", 1)[0]).strip()
-        chunks.append(
-            {
-                "text": part,
-                "metadata": {**metadata, "section": title},
-            }
-        )
+        split_parts = _split_large_section(part)
+        if len(split_parts) == 1:
+            chunks.append(
+                {
+                    "text": split_parts[0],
+                    "metadata": {**metadata, "section": title},
+                }
+            )
+            continue
+
+        for i, split_part in enumerate(split_parts, start=1):
+            chunks.append(
+                {
+                    "text": split_part,
+                    "metadata": {**metadata, "section": title, "part": i},
+                }
+            )
     return chunks
 
 
