@@ -1,22 +1,21 @@
 import re
-
 from difflib import SequenceMatcher, get_close_matches
 
 from data_loader import load_stations
+from nlp_utils import nlp
 from task_3.expert.nlp_slots import (
     NlpExtraction,
     analyse_incident_text,
-    extract_duration_minutes as nlp_extract_duration,
-    extract_event_type as nlp_extract_event_type,
-    extract_incident_time as nlp_extract_incident_time,
-    extract_info_topics as nlp_extract_info_topics,
     extract_route_phrases,
-    extract_severity as nlp_extract_severity,
-    extract_staff_role as nlp_extract_staff_role,
     get_doc,
 )
+from task_3.expert.nlp_slots import extract_duration_minutes as nlp_extract_duration
+from task_3.expert.nlp_slots import extract_event_type as nlp_extract_event_type
+from task_3.expert.nlp_slots import extract_incident_time as nlp_extract_incident_time
+from task_3.expert.nlp_slots import extract_info_topics as nlp_extract_info_topics
+from task_3.expert.nlp_slots import extract_severity as nlp_extract_severity
+from task_3.expert.nlp_slots import extract_staff_role as nlp_extract_staff_role
 from task_3.expert.station_index import canonical_station_name
-from nlp_utils import nlp
 
 _VAGUE_STATION_PHRASES = frozenset(
     {
@@ -37,7 +36,16 @@ _VAGUE_STATION_PHRASES = frozenset(
         "2 stations",
         "two station",
         "2 station",
+        "staff",
+        "signaller",
+        "signaler",
+        "control",
+        "station staff",
     }
+)
+
+_ROLE_WORDS = frozenset(
+    {"staff", "signaller", "signaler", "control", "station staff"}
 )
 
 _stations_df = None
@@ -272,7 +280,9 @@ def _resolve_route_station(phrase: str) -> str | None:
     return None
 
 
-def _resolve_route_pair(from_phrase: str | None, to_phrase: str | None) -> tuple[str | None, str | None]:
+def _resolve_route_pair(
+    from_phrase: str | None, to_phrase: str | None
+) -> tuple[str | None, str | None]:
     if not from_phrase or not to_phrase:
         return None, None
     a = _resolve_route_station(from_phrase)
@@ -352,6 +362,8 @@ def parse_station_correction(text: str) -> str | None:
     stripped = text.strip()
     if not stripped or len(stripped) > 35:
         return None
+    if stripped.lower() in _ROLE_WORDS:
+        return None
     if parse_event_type_answer(text) or parse_severity(text):
         return None
     return parse_single_station_answer(text)
@@ -411,7 +423,11 @@ def apply_role_event_defaults(state) -> bool:
             state.station = None
         return True
 
-    if default == "station_disruption" and not has_line_detail and not has_station_detail:
+    if (
+        default == "station_disruption"
+        and not has_line_detail
+        and not has_station_detail
+    ):
         state.event_type = default
         state.from_station = None
         state.to_station = None
@@ -468,7 +484,9 @@ def parse_service_period(text: str) -> str | None:
         return "off_peak"
     if "peak" in lower or "rush hour" in lower:
         return "peak"
-    if re.search(r"\b([7-9])\s*(am)\b", lower) or re.search(r"\b([4-6])\s*(pm)\b", lower):
+    if re.search(r"\b([7-9])\s*(am)\b", lower) or re.search(
+        r"\b([4-6])\s*(pm)\b", lower
+    ):
         return "peak"
     return None
 
@@ -554,10 +572,7 @@ def fill_pending_slot(state, text: str) -> bool:
                 if state.event_type == "line_blockage":
                     state.station = None
             elif slot == "to_station":
-                if (
-                    state.from_station
-                    and value.lower() == state.from_station.lower()
-                ):
+                if state.from_station and value.lower() == state.from_station.lower():
                     return False
                 state.to_station = friendly_station_label(value)
             else:
@@ -604,12 +619,18 @@ def apply_message_slots(state, text: str) -> bool:
 
     apply_role_event_defaults(state)
 
-    if parsed.mentions_blockage and not state.event_type and (state.from_station or state.to_station):
+    if (
+        parsed.mentions_blockage
+        and not state.event_type
+        and (state.from_station or state.to_station)
+    ):
         state.event_type = "line_blockage"
 
     if state.incident_time and not state.service_period:
         if state.incident_time in ("morning", "afternoon", "evening"):
-            state.service_period = "peak" if state.incident_time in ("morning", "evening") else "off_peak"
+            state.service_period = (
+                "peak" if state.incident_time in ("morning", "evening") else "off_peak"
+            )
         elif state.incident_time in ("night", "tonight"):
             state.service_period = "off_peak"
 

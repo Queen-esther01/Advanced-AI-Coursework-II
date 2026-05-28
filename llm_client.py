@@ -156,15 +156,42 @@ class LLMClient:
         except Exception as exc:
             yield _format_llm_error(exc)
 
-    def stream_delay_assistant(self, messages: list[dict]) -> Iterator[str]:
+    def stream_delay_assistant(
+        self,
+        messages: list[dict],
+        journey_context: dict | None = None,
+    ) -> Iterator[str]:
         from task_2.delay_tool import tools as delay_tools
-        from task_2.utils import MAX_TOOL_ROUNDS, execute_tool_call
+        from task_2.utils import (
+            MAX_TOOL_ROUNDS,
+            build_system_prompt,
+            execute_tool_call,
+            sync_journey_context_from_messages,
+            try_automatic_delay_reply,
+            update_journey_context_from_tool,
+        )
+
+        ctx = journey_context if journey_context is not None else {}
+
+        auto_reply = try_automatic_delay_reply(ctx, messages)
+        if auto_reply:
+            yield auto_reply
+            return
+
+        sync_journey_context_from_messages(ctx, messages)
+
+        def execute_with_context(tool_name: str, arguments_json: str) -> dict:
+            result = execute_tool_call(tool_name, arguments_json)
+            update_journey_context_from_tool(ctx, tool_name, arguments_json, result)
+            return result
 
         yield from self.stream_with_tools(
             messages,
             tools=delay_tools,
-            execute_tool=execute_tool_call,
+            execute_tool=execute_with_context,
             max_rounds=MAX_TOOL_ROUNDS,
+            system_prompt=build_system_prompt(ctx),
+            journey_context=ctx,
         )
 
     def stream_with_tools(
@@ -174,6 +201,8 @@ class LLMClient:
         tools: list[dict],
         execute_tool: Callable[[str, str], dict],
         max_rounds: int = 5,
+        system_prompt: str | None = None,
+        journey_context: dict | None = None,
     ) -> Iterator[str]:
         from task_2.utils import (
             clean_model_text,
@@ -186,9 +215,10 @@ class LLMClient:
             return
 
         model_messages = list(messages)
-        if self.system_prompt:
+        prompt = system_prompt if system_prompt is not None else self.system_prompt
+        if prompt:
             model_messages = [
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": prompt},
                 *model_messages,
             ]
 
@@ -214,7 +244,6 @@ class LLMClient:
                                 cleaned = clean_model_text(delta.content)
                                 if cleaned:
                                     content_parts.append(cleaned)
-                                    yield cleaned
 
                             if delta.tool_calls:
                                 merge_stream_tool_calls(
@@ -223,6 +252,8 @@ class LLMClient:
 
                     tool_calls = tool_calls_from_accumulator(tool_call_accumulator)
                     if not tool_calls:
+                        for part in content_parts:
+                            yield part
                         return
 
                     model_messages.append(
@@ -244,6 +275,13 @@ class LLMClient:
                                 "tool_call_id": tool_call["id"],
                                 "content": json.dumps(tool_result),
                             }
+                        )
+
+                    if journey_context is not None:
+                        from task_2.utils import maybe_append_auto_delay_tool_messages
+
+                        maybe_append_auto_delay_tool_messages(
+                            journey_context, tool_calls, model_messages
                         )
 
                 yield (

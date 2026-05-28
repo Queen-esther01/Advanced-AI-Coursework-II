@@ -31,6 +31,8 @@ _STATION_ALIASES = {
     "london": "WAT",
     "weymouth": "WEY",
     "wareham": "WRM",
+    "weyham": "WRM",
+    "weymham": "WRM",
     "hamworthy": "HAM",
 }
 
@@ -156,6 +158,258 @@ def update_journey_context_from_tool(journey_context, tool_name, arguments_json,
         journey_context["planned_time_at_current_stop"] = arguments.get(
             "planned_time_at_current_stop"
         )
+
+
+_FROM_TO_PATTERNS = (
+    re.compile(
+        r"(?:coming\s+)?from\s+([a-z][a-z\s]*?)\s+"
+        r"(?:going|headed|traveling|travelling)\s+to\s+([a-z][a-z\s]*?)(?:\s|$|[.,!?])",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bfrom\s+([a-z][a-z\s]*?)\s+to\s+([a-z][a-z\s]*?)(?:\s|$|[.,!?])",
+        re.IGNORECASE,
+    ),
+)
+_GOING_TO_PATTERN = re.compile(
+    r"(?:going|headed|traveling|travelling)\s+to\s+([a-z][a-z\s]*?)(?:\s|$|[.,!?])",
+    re.IGNORECASE,
+)
+_AT_STATION_PATTERN = re.compile(
+    r"\bat\s+([a-z][a-z\s]+?)(?:\s+going|\s*$|[.,!?])",
+    re.IGNORECASE,
+)
+_DELAY_MINUTES_PATTERNS = (
+    re.compile(r"been\s+here\s+for\s+(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s*min(?:ute)?s?\s*(?:late|delay|behind)?", re.IGNORECASE),
+    re.compile(r"delay(?:ed)?\s+(?:of\s+)?(\d+)", re.IGNORECASE),
+    re.compile(r"(\d+)\s*min(?:ute)?s?\s+late", re.IGNORECASE),
+)
+_PLANNED_TIME_PATTERNS = (
+    re.compile(
+        r"supposed\s+to\s+(?:arrive|depart|leave)\s+(?:at\s+)?"
+        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:planned|scheduled|due|expected)\s+(?:to\s+)?(?:arrive|depart|at)?\s*"
+        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:arrive|arrival|depart|departure)\s+(?:at\s+)?"
+        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _user_message_texts(messages):
+    texts = []
+    for message in messages or []:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            texts.append(content.strip())
+    return texts
+
+
+def _title_station(name):
+    cleaned = re.sub(r"\s+", " ", (name or "").strip())
+    return cleaned.title() if cleaned else ""
+
+
+def _parse_planned_time_from_text(text):
+    for pattern in _PLANNED_TIME_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _parse_delay_minutes_from_text(text):
+    for pattern in _DELAY_MINUTES_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _last_assistant_asks_for(messages, keyword):
+    for message in reversed(messages or []):
+        if message.get("role") != "assistant":
+            continue
+        content = (message.get("content") or "").lower()
+        return keyword in content
+    return False
+
+
+def sync_journey_context_from_messages(journey_context, messages):
+    """Fill journey_context from user chat text (stations, delay, planned time)."""
+    texts = _user_message_texts(messages)
+    if not texts:
+        return
+
+    for text in reversed(texts):
+        lowered = text.lower()
+        for pattern in _FROM_TO_PATTERNS:
+            match = pattern.search(lowered)
+            if match:
+                journey_context["current_location"] = _title_station(match.group(1))
+                journey_context["destination"] = _title_station(match.group(2))
+                break
+        if journey_context.get("current_location") and journey_context.get("destination"):
+            break
+
+    for text in reversed(texts):
+        match = _GOING_TO_PATTERN.search(text.lower())
+        if match:
+            journey_context["destination"] = _title_station(match.group(1))
+            break
+
+    for text in reversed(texts):
+        match = _AT_STATION_PATTERN.search(text.lower())
+        if match:
+            journey_context["current_location"] = _title_station(match.group(1))
+            break
+
+    for text in reversed(texts):
+        station = _title_station(text)
+        if not station or len(station.split()) > 4:
+            continue
+        code = resolve_station_code(station)
+        if not code:
+            continue
+        if _last_assistant_asks_for(messages, "destination"):
+            journey_context["destination"] = station
+        elif _last_assistant_asks_for(messages, "current station") or _last_assistant_asks_for(
+            messages, "current location"
+        ):
+            journey_context["current_location"] = station
+        elif not journey_context.get("current_location"):
+            journey_context["current_location"] = station
+        elif not journey_context.get("destination"):
+            journey_context["destination"] = station
+
+    for text in reversed(texts):
+        delay = _parse_delay_minutes_from_text(text)
+        if delay is not None:
+            journey_context["current_delay"] = delay
+            break
+
+    for text in reversed(texts):
+        planned = _parse_planned_time_from_text(text)
+        if planned:
+            journey_context["planned_time_at_current_stop"] = planned
+            break
+
+    current = journey_context.get("current_location")
+    destination = journey_context.get("destination")
+    if current and destination and not journey_context.get("coverage_confirmed"):
+        coverage = check_station_coverage(current, destination)
+        update_journey_context_from_tool(
+            journey_context,
+            "check_station_coverage",
+            json.dumps({"current_location": current, "destination": destination}),
+            coverage,
+        )
+
+
+def format_delay_prediction_reply(result):
+    if "error" in result:
+        return (
+            "I could not run the delay prediction: "
+            f"{result['error']}. Please check the station names, delay, and planned time."
+        )
+    lines = [
+        result.get("reason", "Here is your delay prediction."),
+        "",
+        f"**Journey:** {result.get('train_journey', '?')} — "
+        f"{result.get('current_location', '?')} → {result.get('destination', '?')}",
+        f"**Predicted delay at destination:** {result.get('predicted_delay_minutes', '?')} minutes",
+        f"**Your reported delay now:** {result.get('current_delay_minutes', '?')} minutes",
+        f"**Planned time at current stop:** {result.get('planned_time_at_current_stop', '?')}",
+    ]
+    return "\n".join(lines)
+
+
+def try_automatic_delay_reply(journey_context, messages):
+    """
+    When the chat already has stations, delay, and planned time, run tools in Python
+    and return a passenger-facing reply without relying on the LLM to call tools.
+    """
+    sync_journey_context_from_messages(journey_context, messages)
+    if not journey_context.get("coverage_confirmed"):
+        return None
+    if not has_delay_inputs(journey_context):
+        return None
+
+    arguments = {
+        "train_journey": journey_context.get("train_journey", ""),
+        "current_location": journey_context.get("current_location", ""),
+        "destination": journey_context.get("destination", ""),
+        "current_delay": journey_context.get("current_delay"),
+        "planned_time_at_current_stop": journey_context.get(
+            "planned_time_at_current_stop", ""
+        ),
+    }
+    arguments_json = json.dumps(arguments)
+    result = execute_tool_call("get_train_delay", arguments_json)
+    update_journey_context_from_tool(
+        journey_context, "get_train_delay", arguments_json, result
+    )
+    return format_delay_prediction_reply(result)
+
+
+def maybe_append_auto_delay_tool_messages(journey_context, tool_calls, model_messages):
+    """After coverage is confirmed, run get_train_delay if the model did not."""
+    if not journey_context.get("coverage_confirmed") or not has_delay_inputs(
+        journey_context
+    ):
+        return
+
+    if any(tc["function"]["name"] == "get_train_delay" for tc in tool_calls):
+        return
+
+    arguments = {
+        "train_journey": journey_context.get("train_journey", ""),
+        "current_location": journey_context.get("current_location", ""),
+        "destination": journey_context.get("destination", ""),
+        "current_delay": journey_context.get("current_delay"),
+        "planned_time_at_current_stop": journey_context.get(
+            "planned_time_at_current_stop", ""
+        ),
+    }
+    arguments_json = json.dumps(arguments)
+    result = execute_tool_call("get_train_delay", arguments_json)
+    update_journey_context_from_tool(
+        journey_context, "get_train_delay", arguments_json, result
+    )
+    synthetic_id = "auto_get_train_delay"
+    model_messages.append(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": synthetic_id,
+                    "type": "function",
+                    "function": {
+                        "name": "get_train_delay",
+                        "arguments": arguments_json,
+                    },
+                }
+            ],
+        }
+    )
+    model_messages.append(
+        {
+            "role": "tool",
+            "tool_call_id": synthetic_id,
+            "content": json.dumps(result),
+        }
+    )
 
 
 def get_stops_from_journey(journey):
