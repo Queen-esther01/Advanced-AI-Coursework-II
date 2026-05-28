@@ -1,10 +1,11 @@
-from expert._compat import patch_collections
+from task_3.expert._compat import patch_collections
 
 patch_collections()
 
 from experta import KnowledgeEngine, MATCH, NOT, Rule, TEST
 
-from expert.facts import Incident
+from task_3.expert.facts import Incident
+from task_3.expert.slot_parser import role_assumption_prefix
 
 
 class IncidentEngine(KnowledgeEngine):
@@ -21,6 +22,12 @@ class IncidentEngine(KnowledgeEngine):
         self.role_focus: str | None = None
         self.time_focus: str | None = None
 
+    def _role(self) -> str | None:
+        return self._best_role_focus()
+
+    def _prefix(self, event_type: str | None) -> str:
+        return role_assumption_prefix(self._role(), event_type)
+
     @Rule(
         Incident(event_type=MATCH.et),
         TEST(lambda et: et not in ("line_blockage", "station_disruption")),
@@ -28,21 +35,40 @@ class IncidentEngine(KnowledgeEngine):
     )
     def unknown_event_type(self, et):
         self._ask(
-            "Is this a **line blockage** between two stations, or a **station disruption** at one location?"
+            "Is this a **line blockage** between two stations, or a **station disruption** at one location?",
+            pending_slot="event_type",
+        )
+
+    @Rule(NOT(Incident(staff_role=MATCH.role)), salience=100)
+    def need_staff_role_first(self):
+        self._ask(
+            "Which role are you acting as: **signaller**, **station staff**, or **control**?",
+            pending_slot="staff_role",
         )
 
     @Rule(
+        Incident(staff_role=MATCH.role),
         NOT(Incident(event_type=MATCH.et)),
         NOT(Incident(from_station=MATCH.fs)),
         NOT(Incident(station=MATCH.st)),
         salience=99,
     )
-    def need_event_type(self):
-        self._ask(
-            "I can help with SWR contingency plans. Is this a **line blockage** between two stations, "
-            "or a **station disruption** at one station? And where is it?",
-            pending_slot="event_type",
-        )
+    def need_event_type_after_role(self, role):
+        if role == "station_staff":
+            self._ask(
+                "Is this a **station disruption** at your station, or a **line blockage** on the line?",
+                pending_slot="event_type",
+            )
+        elif role == "signaller":
+            self._ask(
+                "Is this a **line blockage** between stations, or a **station disruption**?",
+                pending_slot="event_type",
+            )
+        else:
+            self._ask(
+                "Is this a **line blockage** between two stations, or a **station disruption** at one station?",
+                pending_slot="event_type",
+            )
 
     @Rule(
         NOT(Incident(event_type=MATCH.et)),
@@ -51,8 +77,9 @@ class IncidentEngine(KnowledgeEngine):
         salience=91,
     )
     def need_type_after_partial_from(self, fs):
+        prefix = self._prefix(None) or ""
         self._ask(
-            f"You mentioned **{fs}**. Is this a **line blockage** from {fs} to another station "
+            f"{prefix}You mentioned **{fs}**. Is this a **line blockage** from {fs} to another station "
             f"(if so, which station?), or a **station disruption** at {fs}?",
             pending_slot="event_type",
         )
@@ -63,8 +90,9 @@ class IncidentEngine(KnowledgeEngine):
         salience=90,
     )
     def need_from_station(self):
+        prefix = self._prefix("line_blockage")
         self._ask(
-            "Which station is at the **start** of the blocked section?",
+            f"{prefix}Which station is at the **start** of the blocked section?",
             pending_slot="from_station",
         )
 
@@ -76,7 +104,7 @@ class IncidentEngine(KnowledgeEngine):
     )
     def need_to_station(self, fs):
         self._ask(
-            f"Which station is at the **end** of the blocked section (after {fs})?",
+            f"Which station is at the **end** of the blocked section (after **{fs}**)?",
             pending_slot="to_station",
         )
 
@@ -92,20 +120,6 @@ class IncidentEngine(KnowledgeEngine):
             f"For the blockage between **{fs}** and **{ts}**, is it a **full** blockage "
             "(both lines) or **partial** (one line)?",
             pending_slot="severity",
-        )
-
-    @Rule(
-        Incident(event_type="line_blockage"),
-        Incident(from_station=MATCH.fs),
-        Incident(to_station=MATCH.ts),
-        Incident(severity=MATCH.sev),
-        NOT(Incident(staff_role=MATCH.role)),
-        salience=87,
-    )
-    def need_staff_role(self):
-        self._ask(
-            "Which role are you acting as: **signaller**, **station staff**, or **control**?",
-            pending_slot="staff_role",
         )
 
     @Rule(
@@ -140,16 +154,37 @@ class IncidentEngine(KnowledgeEngine):
         salience=90,
     )
     def need_station(self):
-        self._ask("Which **station** is affected?", pending_slot="station")
+        prefix = self._prefix("station_disruption")
+        self._ask(
+            f"{prefix}Which **station** is affected?",
+            pending_slot="station",
+        )
 
     @Rule(
         Incident(event_type="line_blockage"),
         Incident(from_station=MATCH.fs),
         Incident(to_station=MATCH.ts),
-        Incident(severity=MATCH.sev),
+        Incident(severity="one_line_blocked"),
+        Incident(staff_role=MATCH.role),
         salience=10,
     )
-    def ready_line_blockage(self, fs, ts, sev):
+    def ready_line_blockage_partial(self, fs, ts):
+        self._ready_line_blockage(fs, ts, "one_line_blocked")
+
+    @Rule(
+        Incident(event_type="line_blockage"),
+        Incident(from_station=MATCH.fs),
+        Incident(to_station=MATCH.ts),
+        Incident(severity="both_lines_blocked"),
+        Incident(staff_role=MATCH.role),
+        Incident(incident_time=MATCH.it),
+        Incident(duration_minutes=MATCH.dm),
+        salience=10,
+    )
+    def ready_line_blockage_full(self, fs, ts):
+        self._ready_line_blockage(fs, ts, "both_lines_blocked")
+
+    def _ready_line_blockage(self, fs, ts, sev):
         topics = self.info_topics or ["staff", "passengers"]
         self.role_focus = self.role_focus or self._best_role_focus()
         self.time_focus = self.time_focus or self._best_time_focus()
@@ -174,6 +209,7 @@ class IncidentEngine(KnowledgeEngine):
     @Rule(
         Incident(event_type="station_disruption"),
         Incident(station=MATCH.st),
+        Incident(staff_role=MATCH.role),
         salience=10,
     )
     def ready_station_disruption(self, st):
@@ -209,7 +245,7 @@ class IncidentEngine(KnowledgeEngine):
         query: str,
         topics: list[str],
     ) -> None:
-        if self.action == "retrieve":
+        if self.action is not None:
             return
         self.action = "retrieve"
         self.plan_source = plan_source

@@ -3,11 +3,13 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
 NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_LIBREOFFICE_LOCK = threading.Lock()
 
 
 def _slide_sort_key(slide_xml_name: str) -> int:
@@ -44,24 +46,33 @@ def _libreoffice_to_pdf(pptx_path: Path, work_dir: Path) -> Path:
             "LibreOffice not found. Install it (e.g. brew install --cask libreoffice) "
             "to render CPT slides."
         )
-    result = subprocess.run(
-        [
-            soffice,
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(work_dir),
-            str(pptx_path.resolve()),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    with _LIBREOFFICE_LOCK:
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(work_dir),
+                str(pptx_path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
         raise RuntimeError(f"LibreOffice failed:\n{result.stderr or result.stdout}")
     pdf_path = work_dir / f"{pptx_path.stem}.pdf"
     if not pdf_path.is_file():
-        raise FileNotFoundError(f"Expected PDF not found: {pdf_path}")
+        produced = sorted(p.name for p in work_dir.glob("*.pdf"))
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        raise FileNotFoundError(
+            f"Expected PDF not found: {pdf_path}. "
+            f"Existing PDFs in outdir: {produced}. "
+            f"LibreOffice stdout: {stdout[:500] or '(empty)'}; "
+            f"stderr: {stderr[:500] or '(empty)'}"
+        )
     return pdf_path
 
 

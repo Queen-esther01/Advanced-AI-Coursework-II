@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from config import STORE_DIR
-from indexing.data_chunker import DataChunker
-from indexing.vector_store import VectorStore
+from task_3.indexing.data_chunker import DataChunker
+from task_3.indexing.vector_store import VectorStore
 
 DEFAULT_DOCUMENT_SUFFIXES = (".doc", ".docx", ".docm", ".pptx", ".pptm")
 DEFAULT_CHECKPOINT_PATH = STORE_DIR / "indexing_checkpoint.json"

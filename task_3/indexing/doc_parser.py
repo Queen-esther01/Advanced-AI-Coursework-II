@@ -47,6 +47,49 @@ def _emf2svg_to_png(emf_path: Path, png_path: Path, errors: list[str]) -> Path |
     return None
 
 
+def _soffice_vector_to_png(
+    emf_path: Path, png_path: Path, errors: list[str]
+) -> Path | None:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        return None
+    out_dir = png_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--convert-to",
+                "png",
+                "--outdir",
+                str(out_dir),
+                str(emf_path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            errors.append(
+                f"soffice: {(result.stderr or result.stdout or '').strip() or result.returncode}"
+            )
+            return None
+        produced = out_dir / f"{emf_path.stem}.png"
+        if not produced.is_file() or produced.stat().st_size == 0:
+            errors.append(
+                f"soffice: expected output missing ({produced})"
+            )
+            return None
+        if produced.resolve() != png_path.resolve():
+            shutil.copy2(produced, png_path)
+        if png_path.exists() and png_path.stat().st_size > 0:
+            return png_path
+        errors.append("soffice: produced no PNG")
+    except Exception as exc:
+        errors.append(f"soffice: {exc}")
+    return None
+
+
 def convert_emf_to_png(
     emf_path: str | Path, png_path: str | Path | None = None
 ) -> Path:
@@ -58,6 +101,10 @@ def convert_emf_to_png(
 
     errors: list[str] = []
     result = _emf2svg_to_png(emf_path, png_path, errors)
+    if result:
+        return result
+
+    result = _soffice_vector_to_png(emf_path, png_path, errors)
     if result:
         return result
 
