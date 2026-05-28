@@ -166,19 +166,10 @@ class LLMClient:
             MAX_TOOL_ROUNDS,
             build_system_prompt,
             execute_tool_call,
-            sync_journey_context_from_messages,
-            try_automatic_delay_reply,
             update_journey_context_from_tool,
         )
 
         ctx = journey_context if journey_context is not None else {}
-
-        auto_reply = try_automatic_delay_reply(ctx, messages)
-        if auto_reply:
-            yield auto_reply
-            return
-
-        sync_journey_context_from_messages(ctx, messages)
 
         def execute_with_context(tool_name: str, arguments_json: str) -> dict:
             result = execute_tool_call(tool_name, arguments_json)
@@ -275,13 +266,6 @@ class LLMClient:
                                 "tool_call_id": tool_call["id"],
                                 "content": json.dumps(tool_result),
                             }
-                        )
-
-                    if journey_context is not None:
-                        from task_2.utils import maybe_append_auto_delay_tool_messages
-
-                        maybe_append_auto_delay_tool_messages(
-                            journey_context, tool_calls, model_messages
                         )
 
                 yield (
