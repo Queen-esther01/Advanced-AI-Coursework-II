@@ -6,6 +6,20 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from llm_client import LLMClient
+
+# Task2 Imports
+from task_2.delay_tool import get_tools_for_session
+from task_2.utils import (
+    MAX_TOOL_ROUNDS,
+    SYSTEM_PROMPT,
+    build_system_prompt,
+    clean_model_text,
+    execute_tool_call,
+    has_delay_inputs,
+    merge_stream_tool_calls,
+    tool_calls_from_accumulator,
+    update_journey_context_from_tool,
+)
 from task_3.incident_handler import (
     IncidentState,
     incident_slots_complete,
@@ -16,43 +30,16 @@ from task_3.incident_handler import (
 from task_3.indexing.vector_store import VectorStore
 
 # Task1 Imports
-from ticket_finder import TicketState, is_ticket_intent, process_ticket_input
+from ticket_finder import (
+    TicketState,
+    is_ticket_intent,
+    process_ticket_input,
+    reset_ticket_state,
+)
 
 load_dotenv(verbose=True)
 
-SYSTEM_PROMPT = """
-You are a helpful railway delay assistant for journeys from Weymouth (WEY) to
-London Waterloo (WAT) and vice versa.
-
-Your job is to guide the passenger through a short chat and collect the details
-needed by a predictive delay model. Ask clear follow-up questions when
-information is missing, including:
-- the current station/location of the train
-- the passenger's destination station
-- the current delay in minutes
-- the planned departure or arrival time at the current stop — use 24-hour
-  time or am/pm (e.g. 17:55 or 5:55pm; bare '5:55' is treated as evening)
-
-Do not ask for stops remaining, remaining journey time, or expected arrival
-time at the destination. Those are calculated automatically by the tools.
-
-Keep replies concise and conversational. Ask only one or two questions at a
-time. When you know the current location and destination, you MUST call
-check_station_coverage before saying whether stations are on the route.
-If coverage is confirmed, call get_train_delay with train_journey,
-current_location, destination, current_delay, and planned_time_at_current_stop.
-Use get_covered_stations if the passenger asks which stations are supported.
-
-Never tell the passenger a station is outside the route without calling
-check_station_coverage first. Wareham, Hamworthy, Poole, and Bournemouth are
-on the Dorset section of this line.
-
-After a tool returns a prediction, explain the expected delay clearly to the
-passenger using the predicted_delay_minutes and reason fields. Do not invent
-numbers that were not returned by a tool.
-
-Do not ask for unnecessary fields like day_of_week.
-""".strip()
+MODEL_NAME = "openai/gpt-4o-mini"
 
 INITIAL_GREETINGS = [
     "Hello! I can help with **Weymouth–Waterloo delay information** or **SWR disruption/contingency plans** "
@@ -131,6 +118,8 @@ if "incident_state" not in st.session_state:
 
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = VectorStore()
+if "journey_context" not in st.session_state:
+    st.session_state.journey_context = {}
 
 # Display all previous messages
 for message in st.session_state.messages:
@@ -193,6 +182,10 @@ def process_user_input(
 
 # Accept user input
 if prompt := st.chat_input("Type a message..."):
+    if prompt.strip().lower() == "reset":
+        st.session_state.journey_context = {}
+
+    # Add user message to history and display it
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
