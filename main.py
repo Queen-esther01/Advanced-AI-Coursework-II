@@ -55,6 +55,10 @@ INITIAL_GREETINGS = [
     "for staff and passenger advice from the plans.",
     "Welcome. For passengers: share your service and where you are. "
     "For staff: say e.g. **station disruption at Weymouth** or a **blockage between two stations**.",
+    "Hello! How can I help with your journey today?",
+    "Welcome, let me know how I can help.",
+    "Good day. Tell me about your journey and what you need help with.",
+    "Hello! Stuck at a station or running late or need to book a new journey? I can help you with that.",
 ]
 
 llm_client = LLMClient(system_prompt=SYSTEM_PROMPT)
