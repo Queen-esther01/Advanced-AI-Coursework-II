@@ -31,5 +31,5 @@ def get_ojp_client():
     )
 
     transport = Transport(session=session)
-    client = Client(WSDL, transport=transport)
+    client = Client(WSDL, transport=transport, settings=settings)
     return client
