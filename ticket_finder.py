@@ -1,23 +1,17 @@
 from data_loader import load_stations
 from difflib import get_close_matches
 from dateutil import parser
-from datetime import datetime
+from datetime import datetime, timedelta
 from national_rail_api import get_ojp_client
 import re
 from nlp_utils import nlp
 
 
 
-def extract_station_from_sentence(text, context_hint=None):
 
-    doc = nlp(text.lower())
+def extract_station_from_sentence(text, context_hint=None):
+    text_lower = text.lower()
     
-    #Try spaCy NER (GPE = city, often a station)
-    for ent in doc.ents:
-        if ent.label_ == "GPE":
-            return ent.text.title()
-    
-    # Look for patterns
     patterns = [
         r"to\s+([a-z\s]+?)(?:\s+on|\s+at|\s+for|\s+$|\.|$)",
         r"from\s+([a-z\s]+?)(?:\s+to|\s+$|\.|$)",
@@ -25,12 +19,17 @@ def extract_station_from_sentence(text, context_hint=None):
         r"travelling\s+to\s+([a-z\s]+?)(?:\s+on|\s+at|\s+for|\s+$|\.|$)"
     ]
     for pattern in patterns:
-        match = re.search(pattern, text.lower())
+        match = re.search(pattern, text_lower)
         if match:
             station_candidate = match.group(1).strip()
-            # Remove trailing prepositions
             station_candidate = re.sub(r'\s+(?:on|at|for)$', '', station_candidate)
             return station_candidate.title()
+    
+    # Then try spaCy NER (as fallback for simple "London" style inputs)
+    doc = nlp(text_lower)
+    for ent in doc.ents:
+        if ent.label_ == "GPE":
+            return ent.text.title()
     
     return None
 
@@ -47,54 +46,107 @@ def extract_date_from_sentence(text):
 stations_df = load_stations()
 station_names = stations_df['NAME'].tolist()
 
-CITY_MAP = {
-    "london": ("LONDON BRIDGE", "LBG"),
-    "manchester": ("MANCHESTER PICCADILLY", "MAN"),
-    "birmingham": ("BIRMINGHAM NEW STREET", "BHM"),
-    "liverpool": ("LIVERPOOL LIME STREET", "LIV"),
-    "leeds": ("LEEDS", "LDS"),
-    "bristol": ("BRISTOL TEMPLE MEADS", "BRI"),
-    "glasgow": ("GLASGOW CENTRAL", "GLC"),
-    "edinburgh": ("EDINBURGH", "EDB"),
-    "cardiff": ("CARDIFF CENTRAL", "CDF"),
-    "sheffield": ("SHEFFIELD", "SHF"),
-    "newcastle": ("NEWCASTLE", "NCL"),
-    "ely": ("ELY", "ELY"),
-    # ...i should add more
+
+# Common station name overrides (for cases where fuzzy matching fails)
+STATION_OVERRIDES = {
+    "london waterloo": ("LONDON WATERLOO", "WAT"),
+    "waterloo": ("LONDON WATERLOO", "WAT"),
+    "london bridge": ("LONDON BRIDGE", "LBG"),
+    "london victoria": ("LONDON VICTORIA", "VIC"),
+    "london kings cross": ("LONDON KINGS CROSS", "KGX"),
+    "london euston": ("LONDON EUSTON", "EUS"),
+    "london paddington": ("LONDON PADDINGTON", "PAD"),
 }
 
 
 def get_station_details(station_name):
+    print(f"DEBUG: get_station_details received: '{station_name}'")
     user_input_lower = station_name.lower().strip()
+    print(f"DEBUG: lowercased: '{user_input_lower}'")
+
     if len(user_input_lower) < 3:
         return None, None
-    elif len(user_input_lower) == 3:
-        pass
-    
-    #Check city mapping
-    for city, (official, crs) in CITY_MAP.items():
-        if city in user_input_lower or user_input_lower in city:
-            return official, crs
 
-    # Fuzzy match
+    # 0) Check common overrides first
+    if user_input_lower in STATION_OVERRIDES:
+        print(f"DEBUG: Override matched -> {STATION_OVERRIDES[user_input_lower]}")
+        return STATION_OVERRIDES[user_input_lower]
+
+    # 1) Fuzzy match against all stations
     lowercase_names = [name.lower() for name in station_names]
-    matches = get_close_matches(user_input_lower, lowercase_names, n=1, cutoff=0.7)
+    matches = get_close_matches(user_input_lower, lowercase_names, n=1, cutoff=0.6)
     if matches:
         best = matches[0]
         idx = lowercase_names.index(best)
         official = station_names[idx]
         crs = stations_df[stations_df['NAME'] == official]['CRS'].values[0]
+        print(f"DEBUG: Fuzzy matched -> {official} ({crs})")
         return official, crs
+
+    # 2) Substring fallback (for longer inputs)
+    if len(user_input_lower) >= 4:
+        for i, name in enumerate(lowercase_names):
+            if user_input_lower in name:
+                official = station_names[i]
+                crs = stations_df[stations_df['NAME'] == official]['CRS'].values[0]
+                print(f"DEBUG: Substring matched -> {official} ({crs})")
+                return official, crs
 
     return None, None
 
 
-def parse_travel_date(date_string, default_hour=10):
-    try:
-        dt = parser.parse(date_string, default=datetime.now().replace(hour=default_hour, minute=0, second=0, microsecond=0))
-        return dt.strftime("%Y-%m-%dT%H:%M:%S+01:00")
-    except:
+def parse_travel_date(date_string, default_hour=6):
+    """
+    Convert natural language date (including 'tomorrow', 'today', 'next Monday', etc.)
+    into API-ready string with timezone offset.
+    Returns None if parsing fails.
+    """
+    date_string = date_string.lower().strip()
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # 1) Direct relative keywords
+    if date_string == 'today':
+        dt = today
+    elif date_string == 'tomorrow':
+        dt = today + timedelta(days=1)
+    elif date_string == 'day after tomorrow':
+        dt = today + timedelta(days=2)
+    elif date_string == 'next tomorrow':
+        dt = today + timedelta(days=2)
+    elif date_string == 'next week':
+        dt = today + timedelta(days=7)
+    else:
+        # 2) "next <weekday>"
+        match = re.match(r'next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$', date_string)
+        if match:
+            weekday_name = match.group(1)
+            weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+            target_weekday = weekdays.index(weekday_name)
+            days_ahead = (target_weekday - today.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # next week, not today
+            dt = today + timedelta(days=days_ahead)
+        else:
+            # 3) Try absolute date parsing (e.g., "15 july 2026")
+            try:
+                # Use a default datetime to avoid dateutil defaulting to current date
+                dt = parser.parse(date_string, default=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+            except Exception:
+                # Also try removing ordinal suffixes (e.g., "15th" -> "15")
+                cleaned = re.sub(r'(\d)(st|nd|rd|th)', r'\1', date_string)
+                try:
+                    dt = parser.parse(cleaned, default=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+                except Exception:
+                    return None
+    
+    # Set time to default_hour
+    dt = dt.replace(hour=default_hour, minute=0, second=0, microsecond=0)
+    
+    # Reject dates in the past (allow today only if the time is in the future? We'll keep simple: no past dates)
+    if dt.date() < today.date():
         return None
+    
+    return dt.strftime("%Y-%m-%dT%H:%M:%S+01:00")
     
     
 # validate station name
@@ -109,10 +161,11 @@ def validate_station(user_input):
         print("BOT: I'm not sure about that station. Please try again (e.g., 'London Waterloo').")
         return None, None
     
-    
 # Ticket state machine
 class TicketState:
     def __init__(self):
+        self.station_choices = []      # list of (official_name, crs)
+        self.choice_target = None      # 'origin' or 'destination'
         self.origin_name = None
         self.origin_crs = None
         self.dest_name = None
@@ -132,8 +185,16 @@ def reset_ticket_state():
     state = TicketState()
 
 def is_ticket_intent(user_input):
+    user_lower = user_input.lower()
+    # Keywords for ticket booking
     keywords = ['ticket', 'cheapest', 'cheap', 'fare', 'book', 'buy', 'journey', 'travel']
-    return any(kw in user_input.lower() for kw in keywords)
+    # Travel intent phrases
+    phrases = ['want to go', 'need to go', 'travelling to', 'going to']
+    if any(kw in user_lower for kw in keywords):
+        return True
+    if any(phrase in user_lower for phrase in phrases):
+        return True
+    return False
 
 def process_ticket_input(user_input, ticket_state):
     from ticket_finder import ticket_response_streamlit
@@ -145,10 +206,11 @@ def process_ticket_input(user_input, ticket_state):
 def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_return=False, inward_datetime=None):
     """
     outward_datetime and inward_datetime must be in the format "YYYY-MM-DDTHH:MM:SS+01:00".
+    Returns: (cheapest_price_in_pence, price_display_string, booking_link, notice_text)
     """
     if not outward_datetime:
         print("BOT: No valid outbound date provided.")
-        return None, None, None
+        return None, None, None, None
 
     print(f"DEBUG: origin CRS = {origin_crs}, dest CRS = {dest_crs}")
     print(f"DEBUG: outward_datetime = {outward_datetime}")
@@ -157,7 +219,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
 
     if not origin_crs or not dest_crs:
         print("BOT: Sorry, I could not recognise the station names.")
-        return None, None, None
+        return None, None, None, None
 
     # Build the request dictionary
     request = {
@@ -180,18 +242,38 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
         response = client.service.RealtimeJourneyPlan(**request)
     except Exception as e:
         print(f"BOT: Something went wrong while contacting National Rail: {e}")
-        return None, None, None
+        return None, None, None, None
 
-    # Parse response (same as before)
     if response.response != "Ok":
         print(f"BOT: National Rail returned an error: {response.responseDetails}")
-        return None, None, None
+        return None, None, None, None
 
     outward_journeys = response.outwardJourney
     if not outward_journeys:
         print("BOT: No journeys found for your dates. Please try a different time.")
-        return None, None, None
+        return None, None, None, None
 
+    # --- Collect service bulletins (notices) ---
+    notices = []
+    for journey in outward_journeys:
+        if hasattr(journey, 'serviceBulletins') and journey.serviceBulletins:
+            for bulletin in journey.serviceBulletins:
+                title = getattr(bulletin, 'title', '')
+                description = getattr(bulletin, 'description', '')
+                if title and description:
+                    notices.append(f"{title}: {description}")
+                elif description:
+                    notices.append(description)
+                elif title:
+                    notices.append(title)
+    # Remove duplicates while preserving order
+    unique_notices = []
+    for n in notices:
+        if n not in unique_notices:
+            unique_notices.append(n)
+    notice_text = "\n".join(unique_notices) if unique_notices else None
+
+    # --- Find cheapest fare ---
     cheapest_price = None
     cheapest_desc = None
     for journey in outward_journeys:
@@ -206,7 +288,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
 
     if cheapest_price is None:
         print("BOT: No fare information was returned. The service may be temporarily unavailable.")
-        return None, None, None
+        return None, None, None, notice_text
 
     price_pounds = cheapest_price / 100.0
         
@@ -217,7 +299,7 @@ def search_national_rail_tickets(origin_crs, dest_crs, outward_datetime, is_retu
         is_return,
         inward_datetime
     )
-    return cheapest_price, f"£{price_pounds:.2f} ({cheapest_desc})", booking_link
+    return cheapest_price, f"£{price_pounds:.2f} ({cheapest_desc})", booking_link, notice_text
 
 def search_and_present_tickets():
     print(f"\nBOT: Looking for the cheapest ticket from {state.origin_name} to {state.dest_name}...")
@@ -418,19 +500,13 @@ def ticket_response(user_input):
 
 
 def search_and_present_tickets_streamlit(state):
-    # Safety checks
-    if not state.outbound_date_api:
-        return "I don't have a valid outbound date. Please start over by typing 'reset'."
-    if not state.origin_crs or not state.dest_crs:
-        return "I'm missing station details. Please reset the conversation by typing 'reset'."
-
     msg = f"\nLooking for the cheapest ticket from {state.origin_name} to {state.dest_name}...\n"
     if state.is_return:
         msg += f"     Outbound: {state.outbound_date_raw}, Return: {state.return_date_raw}\n"
     else:
         msg += f"     Outbound: {state.outbound_date_raw}\n"
 
-    price_pence, price_display, link = search_national_rail_tickets(
+    price_pence, price_display, link, notice = search_national_rail_tickets(
         state.origin_crs,
         state.dest_crs,
         state.outbound_date_api,
@@ -440,8 +516,9 @@ def search_and_present_tickets_streamlit(state):
 
     if price_pence is None:
         msg += "Please try again with different stations or dates.\n"
-        reset_ticket_state()   # use your global reset (but it uses global state, so we reset manually)
-        # Manual reset:
+        if notice:
+            msg += f"\n📢 **Notice from National Rail:**\n{notice}\n"
+        # Reset state
         state.origin_name = None
         state.origin_crs = None
         state.dest_name = None
@@ -457,6 +534,8 @@ def search_and_present_tickets_streamlit(state):
 
     msg += f"The cheapest ticket I found is {price_display}.\n"
     msg += f"You can book it at: {link}\n"
+    if notice:
+        msg += f"\n📢 **Notice from National Rail:**\n{notice}\n"
     msg += "Would you like to book another ticket? (type 'reset' to start over, or 'bye' to exit)"
     # Reset state for next conversation
     state.origin_name = None
@@ -473,19 +552,65 @@ def search_and_present_tickets_streamlit(state):
     return msg
 
 
+
+def get_station_candidates(query, max_results=10):
+    """
+    Return a list of (official_name, crs) for stations that match the query.
+    Uses fuzzy matching and substring matching, removes duplicates,
+    and sorts results with preference for stations whose name starts with the query.
+    """
+    query_lower = query.lower().strip()
+    if len(query_lower) < 2:
+        return []
+    
+    candidates = []
+    lowercase_names = [name.lower() for name in station_names]
+    
+    # 1) Fuzzy matching (get up to 30 matches, we'll later trim)
+    fuzzy_matches = get_close_matches(query_lower, lowercase_names, n=30, cutoff=0.4)
+    for m in fuzzy_matches:
+        idx = lowercase_names.index(m)
+        official = station_names[idx]
+        crs = stations_df[stations_df['NAME'] == official]['CRS'].values[0]
+        candidates.append((official, crs))
+    
+    # 2) Substring matching (always add any station containing the query, even if fuzzy already added)
+    if len(query_lower) >= 3:
+        for i, name in enumerate(lowercase_names):
+            if query_lower in name:
+                official = station_names[i]
+                crs = stations_df[stations_df['NAME'] == official]['CRS'].values[0]
+                if (official, crs) not in candidates:
+                    candidates.append((official, crs))
+                # No early break; we collect all, then trim later
+    
+    # Remove duplicates (keep first occurrence)
+    seen = set()
+    unique = []
+    for name, crs in candidates:
+        key = (name, crs)
+        if key not in seen:
+            seen.add(key)
+            unique.append(key)
+    
+    # Sort: priority to stations whose name starts with the query (case-insensitive)
+    def sort_key(item):
+        name, _ = item
+        name_lower = name.lower()
+        if name_lower.startswith(query_lower):
+            return (0, name)      # starts with query, then alphabetical
+        elif query_lower in name_lower:
+            return (1, name)      # contains query, then alphabetical
+        else:
+            return (2, name)
+    
+    unique.sort(key=sort_key)
+    return unique[:max_results]
+
+
 def ticket_response_streamlit(user_input, state):
-    """
-    Same logic as ticket_response, but returns the bot's message as a string
-    and uses the passed 'state' object (no global).
-    Returns:
-        str: the bot's reply to show in the Streamlit chat.
-        None: if no reply was generated (fallback to LLM?).
-    """
     # Handle post-ticket commands
     if user_input.lower() == 'reset':
-        reset_ticket_state()  # This still uses global – we need to reset the passed state instead
-        # Instead, we should reset the passed state
-        # Since reset_ticket_state uses global, we'll override it:
         state.origin_name = None
         state.origin_crs = None
         state.dest_name = None
@@ -496,12 +621,12 @@ def ticket_response_streamlit(user_input, state):
         state.return_date_api = None
         state.is_return = False
         state.temp_dest = None
+        state.station_choices = []
+        state.choice_target = None
         state.stage = 'idle'
         return "Conversation reset. How can I help you?"
 
     if state.stage == 'idle' and user_input.lower() == 'yes':
-        # User wants another ticket – restart the process
-        # Reset state fields manually
         state.origin_name = None
         state.origin_crs = None
         state.dest_name = None
@@ -512,21 +637,87 @@ def ticket_response_streamlit(user_input, state):
         state.return_date_api = None
         state.is_return = False
         state.temp_dest = None
+        state.station_choices = []
+        state.choice_target = None
         state.stage = 'wait_origin'
         return "Great! Where would you like to travel from?"
 
     # Start new ticket conversation
     if state.stage == 'idle':
-        if is_ticket_intent(user_input):
-            state.stage = 'wait_origin'
-            return "Sure! Where are you travelling from?"
-        # Also check for travel phrases like "I want to go to X"
-        travel_match = re.search(r"(?:want to go to|need to go to|travelling to|going to)\s+([a-z\s]+)$", user_input.lower())
+        travel_match = re.search(r"(?:want to go to|need to go to|travelling to|going to)\s+([a-z\s]+?)(?:\.|$)", user_input.lower())
         if travel_match:
             dest_candidate = travel_match.group(1).strip().title()
             state.temp_dest = dest_candidate
             state.stage = 'wait_origin'
             return f"I see you want to go to {dest_candidate}. Where will you be travelling from?"
+        if is_ticket_intent(user_input):
+            state.stage = 'wait_origin'
+            return "Sure! Where are you travelling from?"
+
+    # Wait for station choice (disambiguation)
+    if state.stage == 'wait_station_choice':
+        try:
+            choice_idx = int(user_input) - 1
+            if 0 <= choice_idx < len(state.station_choices):
+                official, crs = state.station_choices[choice_idx]
+                if state.choice_target == 'origin':
+                    state.origin_name = official
+                    state.origin_crs = crs
+                    state.station_choices = []
+                    state.choice_target = None
+                    if state.temp_dest:
+                        # We have a destination already from travel phrase
+                        temp_official, temp_crs = get_station_details(state.temp_dest)
+                        if temp_official:
+                            state.dest_name = temp_official
+                            state.dest_crs = temp_crs
+                        else:
+                            state.temp_dest = None
+                            state.stage = 'wait_destination'
+                            return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                        state.stage = 'wait_outbound'
+                        return f"Alright. You're going from {official} (code: {crs}) to {state.temp_dest}. What is your outbound travel date? (e.g., 15th July 2026)"
+                    else:
+                        state.stage = 'wait_destination'
+                        return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                elif state.choice_target == 'destination':
+                    state.dest_name = official
+                    state.dest_crs = crs
+                    state.station_choices = []
+                    state.choice_target = None
+                    state.stage = 'wait_outbound'
+                    return f"Thanks. {official} (code: {crs}). What is your outbound travel date? (e.g., 15th July 2026)"
+            else:
+                return f"Please choose a number between 1 and {len(state.station_choices)}."
+        except ValueError:
+            # If user typed a station name instead of a number, try to match directly
+            official, crs = get_station_details(user_input)
+            if official:
+                if state.choice_target == 'origin':
+                    state.origin_name = official
+                    state.origin_crs = crs
+                    state.station_choices = []
+                    state.choice_target = None
+                    if state.temp_dest:
+                        temp_official, temp_crs = get_station_details(state.temp_dest)
+                        if temp_official:
+                            state.dest_name = temp_official
+                            state.dest_crs = temp_crs
+                        else:
+                            state.temp_dest = None
+                            state.stage = 'wait_destination'
+                            return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                        state.stage = 'wait_outbound'
+                        return f"Alright. You're going from {official} (code: {crs}) to {state.temp_dest}. What is your outbound travel date? (e.g., 15th July 2026)"
+                elif state.choice_target == 'destination':
+                    state.dest_name = official
+                    state.dest_crs = crs
+                    state.station_choices = []
+                    state.choice_target = None
+                    state.stage = 'wait_outbound'
+                    return f"Thanks. {official} (code: {crs}). What is your outbound travel date? (e.g., 15th July 2026)"
+            else:
+                return "I didn't recognise that station. Please type the number from the list, or type the full station name."
 
     # Wait for origin
     if state.stage == 'wait_origin':
@@ -535,25 +726,59 @@ def ticket_response_streamlit(user_input, state):
             user_input_for_validation = extracted
         else:
             user_input_for_validation = user_input
-        official, crs = validate_station(user_input_for_validation)
-        if official:
-            state.origin_name = official
-            state.origin_crs = crs
-            if state.temp_dest:
-                temp_official, temp_crs = validate_station(state.temp_dest)
-                if temp_official:
-                    state.dest_name = temp_official
-                    state.dest_crs = temp_crs
+
+        # Check if this is a single word (potential ambiguous city)
+        is_single_word = ' ' not in user_input_for_validation.strip()
+        
+        if not is_single_word:
+            # Multi‑word input: try direct match first
+            official, crs = get_station_details(user_input_for_validation)
+            if official:
+                state.origin_name = official
+                state.origin_crs = crs
+                if state.temp_dest:
+                    temp_official, temp_crs = get_station_details(state.temp_dest)
+                    if temp_official:
+                        state.dest_name = temp_official
+                        state.dest_crs = temp_crs
+                    else:
+                        state.temp_dest = None
+                        state.stage = 'wait_destination'
+                        return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                    state.stage = 'wait_outbound'
+                    return f"Alright. You're going from {official} (code: {crs}) to {state.temp_dest}. What is your outbound travel date? (e.g., 15th July 2026)"
                 else:
-                    # if the temp_dest was invalid, forget it and ask normally
-                    state.temp_dest = None
                     state.stage = 'wait_destination'
                     return f"Got it. {official} (code: {crs}). Where do you want to go?"
-                state.stage = 'wait_outbound'
-                return f"Alright. You're going from {official} (code: {crs}) to {state.temp_dest}. What is your outbound travel date? (e.g., 15th July 2026)"
+        # For single‑word input, go directly to candidate list (skip fuzzy match)
+        candidates = get_station_candidates(user_input_for_validation)
+        if candidates:
+            # If only one candidate, we could use it directly, but for consistency we still show list? 
+            # Let's use it directly if only one.
+            if len(candidates) == 1:
+                official, crs = candidates[0]
+                state.origin_name = official
+                state.origin_crs = crs
+                if state.temp_dest:
+                    temp_official, temp_crs = get_station_details(state.temp_dest)
+                    if temp_official:
+                        state.dest_name = temp_official
+                        state.dest_crs = temp_crs
+                    else:
+                        state.temp_dest = None
+                        state.stage = 'wait_destination'
+                        return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                    state.stage = 'wait_outbound'
+                    return f"Alright. You're going from {official} (code: {crs}) to {state.temp_dest}. What is your outbound travel date? (e.g., 15th July 2026)"
+                else:
+                    state.stage = 'wait_destination'
+                    return f"Got it. {official} (code: {crs}). Where do you want to go?"
             else:
-                state.stage = 'wait_destination'
-                return f"Got it. {official} (code: {crs}). Where do you want to go?"
+                state.station_choices = candidates
+                state.choice_target = 'origin'
+                state.stage = 'wait_station_choice'
+                options = "\n".join([f"{i+1}. {name} ({crs})" for i, (name, crs) in enumerate(candidates[:10])])
+                return f"There are several stations matching '{user_input_for_validation}'. Please choose one by number:\n{options}"
         else:
             return "I'm not sure about that station. Please try again (e.g., 'London Waterloo' or say 'I am going to Norwich')."
 
@@ -564,12 +789,31 @@ def ticket_response_streamlit(user_input, state):
             user_input_for_validation = extracted
         else:
             user_input_for_validation = user_input
-        official, crs = validate_station(user_input_for_validation)
-        if official:
-            state.dest_name = official
-            state.dest_crs = crs
-            state.stage = 'wait_outbound'
-            return f"Thanks. {official} (code: {crs}). What is your outbound travel date? (e.g., 15th July 2026)"
+
+        is_single_word = ' ' not in user_input_for_validation.strip()
+        
+        if not is_single_word:
+            official, crs = get_station_details(user_input_for_validation)
+            if official:
+                state.dest_name = official
+                state.dest_crs = crs
+                state.stage = 'wait_outbound'
+                return f"Thanks. {official} (code: {crs}). What is your outbound travel date? (e.g., 15th July 2026)"
+        
+        candidates = get_station_candidates(user_input_for_validation)
+        if candidates:
+            if len(candidates) == 1:
+                official, crs = candidates[0]
+                state.dest_name = official
+                state.dest_crs = crs
+                state.stage = 'wait_outbound'
+                return f"Thanks. {official} (code: {crs}). What is your outbound travel date? (e.g., 15th July 2026)"
+            else:
+                state.station_choices = candidates
+                state.choice_target = 'destination'
+                state.stage = 'wait_station_choice'
+                options = "\n".join([f"{i+1}. {name} ({crs})" for i, (name, crs) in enumerate(candidates[:10])])
+                return f"There are several stations matching '{user_input_for_validation}'. Please choose one by number:\n{options}"
         else:
             return "I'm not sure about that station. Please try again (e.g., 'London Waterloo' or say 'I am going to Norwich')."
 
@@ -587,7 +831,8 @@ def ticket_response_streamlit(user_input, state):
 
     # Ask return or single
     if state.stage == 'ask_return':
-        if user_input.lower() in ['yes', 'y', 'return']:
+        answer = user_input.lower().strip()
+        if answer in ['yes', 'y', 'return']:
             state.is_return = True
             state.stage = 'wait_return'
             return "What is your return date?"
@@ -606,6 +851,6 @@ def ticket_response_streamlit(user_input, state):
             state.stage = 'search'
             return search_and_present_tickets_streamlit(state)
         else:
-            return "Sorry, I didn't understand that date. Please try again."
+            return "Sorry, I didn't understand that date. Please try again (e.g., '15 July 2026')."
 
     return None
